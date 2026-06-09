@@ -3,6 +3,7 @@ import { api, formatError } from "../lib/api";
 import { FlagTeam, Flag } from "../components/FlagTeam";
 import { Crown, Strategy as StrategyIcon, Star, Lightning, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { fmtSwedishCompact } from "../lib/dates";
+import { useCountdown, isPast } from "../lib/countdown";
 
 const VERSIONS = [
   { v: 1, label: "Version 1", mult: 1.0, hint: "Max poäng (100 %)", color: "#00F0FF" },
@@ -90,7 +91,7 @@ function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit = null }
 export default function TournamentPrediction() {
   const [groups, setGroups] = useState({});
   const [version, setVersion] = useState(1);
-  const [deadline, setDeadline] = useState(null);
+  const [deadlines, setDeadlines] = useState({ 1: null, 2: null, 3: null, 4: null });
   const [pred, setPred] = useState({
     group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], finalists: [], champion: "",
   });
@@ -110,13 +111,18 @@ export default function TournamentPrediction() {
       const [g, mine, dl] = await Promise.all([
         api.get("/teams/groups"),
         api.get("/tournament-predictions/me"),
-        api.get("/config/v1-deadline").catch(() => ({ data: {} })),
+        api.get("/config/deadlines").catch(() => ({ data: {} })),
       ]);
       setGroups(g.data);
       const map = {};
       mine.data.forEach((p) => (map[p.version] = p));
       setExisting(map);
-      setDeadline(dl.data?.deadline || null);
+      setDeadlines({
+        1: dl.data?.["1"] || null,
+        2: dl.data?.["2"] || null,
+        3: dl.data?.["3"] || null,
+        4: dl.data?.["4"] || null,
+      });
     })();
   }, []);
 
@@ -157,7 +163,9 @@ export default function TournamentPrediction() {
   };
 
   const currentMult = VERSIONS.find((v) => v.v === version)?.mult || 1;
-  const deadlinePassed = deadline && new Date(deadline) < new Date();
+  const currentDeadline = deadlines[version];
+  const deadlinePassed = currentDeadline ? isPast(currentDeadline) : false;
+  const countdown = useCountdown(deadlinePassed ? null : currentDeadline, { closedLabel: "" });
 
   return (
     <div className="space-y-6">
@@ -167,14 +175,15 @@ export default function TournamentPrediction() {
         <p className="text-zinc-500 text-sm mt-1">
           Strategipoäng: Gruppvinnare +5 · Vidare från grupp +3 · Åttondelsfinal +4 · Sextondelsfinal +6 · Kvartsfinal +8 · Semifinal +12 · Final +20 · Mästare +30.
         </p>
-        {version === 1 && deadline && (
+        {currentDeadline && (
           deadlinePassed ? (
-            <div className="mt-2 text-xs px-3 py-2 border border-white/10 text-zinc-400" data-testid="v1-closed-banner">
-              Version 1 är stängd.
+            <div className="mt-2 text-xs px-3 py-2 border border-white/10 text-zinc-400" data-testid={`v${version}-closed-banner`}>
+              Version {version} är stängd.
             </div>
           ) : (
-            <div className="mt-2 text-xs px-3 py-2 border border-[#FFCC00] text-[#FFCC00]" data-testid="v1-open-banner">
-              <span className="font-bold uppercase tracking-widest">Version 1 stänger:</span> {fmtSwedishCompact(deadline)} (Europe/Stockholm)
+            <div className="mt-2 text-xs px-3 py-2 border border-[#FFCC00] text-[#FFCC00]" data-testid={`v${version}-open-banner`}>
+              <span className="font-bold uppercase tracking-widest">Version {version} stänger:</span> {fmtSwedishCompact(currentDeadline)} (Europe/Stockholm)
+              {countdown && <span className="ml-2 normal-case text-white"> · {countdown}</span>}
             </div>
           )
         )}
@@ -182,22 +191,28 @@ export default function TournamentPrediction() {
 
       {/* Version selector */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {VERSIONS.map((v) => (
-          <button
-            key={v.v}
-            data-testid={`version-${v.v}`}
-            onClick={() => setVersion(v.v)}
-            className={`p-3 border text-left transition-all ${
-              version === v.v ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
-            }`}
-          >
-            <div className="label-eyebrow" style={{ color: v.color }}>{v.label}</div>
-            <div className="text-xs text-zinc-400 mt-1">{v.hint}</div>
-            {existing[v.v] && (
-              <div className="text-[10px] uppercase tracking-widest text-[#39FF14] mt-2">Sparad</div>
-            )}
-          </button>
-        ))}
+        {VERSIONS.map((v) => {
+          const dl = deadlines[v.v];
+          const closed = dl ? isPast(dl) : false;
+          return (
+            <button
+              key={v.v}
+              data-testid={`version-${v.v}`}
+              onClick={() => setVersion(v.v)}
+              className={`p-3 border text-left transition-all ${
+                version === v.v ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
+              }`}
+            >
+              <div className="label-eyebrow" style={{ color: v.color }}>{v.label}</div>
+              <div className="text-xs text-zinc-400 mt-1">{v.hint}</div>
+              {closed ? (
+                <div className="text-[10px] uppercase tracking-widest text-zinc-500 mt-2">Stängd</div>
+              ) : existing[v.v] ? (
+                <div className="text-[10px] uppercase tracking-widest text-[#39FF14] mt-2">Sparad</div>
+              ) : null}
+            </button>
+          );
+        })}
       </div>
 
       <div className="surface p-3 text-xs text-zinc-400 flex items-center gap-2">
@@ -285,9 +300,13 @@ export default function TournamentPrediction() {
         <button
           data-testid="submit-tournament-prediction"
           onClick={submit}
-          className="w-full bg-[#00F0FF] text-black font-bold uppercase tracking-widest py-4 hover:bg-white transition-all"
+          disabled={deadlinePassed}
+          className="w-full bg-[#00F0FF] text-black font-bold uppercase tracking-widest py-4 hover:bg-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          <span className="inline-flex items-center gap-2"><Star size={20} weight="fill" /> Spara Version {version}</span>
+          <span className="inline-flex items-center gap-2">
+            <Star size={20} weight="fill" />
+            {deadlinePassed ? `Version ${version} är låst` : `Spara Version ${version}`}
+          </span>
         </button>
       </div>
     </div>

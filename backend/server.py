@@ -73,6 +73,8 @@ async def get_current_user(request: Request) -> dict:
         user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(401, "User not found")
+        if user.get("status") in ("deactivated", "banned", "deleted"):
+            raise HTTPException(403, "Kontot är inte aktivt")
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(401, "Token expired")
@@ -164,15 +166,38 @@ class StrategyReq(BaseModel):
 class V1DeadlineReq(BaseModel):
     deadline: datetime
 
+class DeadlineReq(BaseModel):
+    deadline: datetime
+
+class UserStatusReq(BaseModel):
+    status: Literal["active", "deactivated", "banned"]
+    reason: Optional[str] = None
+
+class UserDeleteReq(BaseModel):
+    confirmation: str  # must be "DELETE"
+    reason: Optional[str] = None
+
+class HallOfFameReq(BaseModel):
+    year: int
+    winner_name: str
+    winner_points: int
+    second_name: str
+    second_points: int
+    third_name: str
+    third_points: int
+
 # ============== Auth ==============
 @api.post("/auth/register")
 async def register(req: RegisterReq, response: Response):
     email = req.email.lower()
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(400, "Email already registered")
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        if existing.get("status") == "banned":
+            raise HTTPException(403, "Den här e-postadressen är blockerad.")
+        raise HTTPException(400, "E-postadressen är redan registrerad")
     invite = await db.invites.find_one({"email": email})
     if email != ADMIN_EMAIL and not invite:
-        raise HTTPException(403, "This is a private app. Your email is not invited.")
+        raise HTTPException(403, "Detta är en privat app. Din e-post finns inte på inbjudningslistan.")
     role = "admin" if email == ADMIN_EMAIL else "user"
     user = {
         "id": str(uuid.uuid4()),
@@ -180,8 +205,11 @@ async def register(req: RegisterReq, response: Response):
         "email": email,
         "password_hash": hash_password(req.password),
         "role": role,
+        "status": "active",
         "created_at": now_utc().isoformat(),
-        "live_points": 0, "strategy_points": 0,
+        "last_login": now_utc().isoformat(),
+        "live_points": 0,
+        "strategy_points": 0,
     }
     await db.users.insert_one(user)
     if invite:
@@ -197,7 +225,16 @@ async def login(req: LoginReq, response: Response):
     email = req.email.lower()
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(req.password, user["password_hash"]):
-        raise HTTPException(401, "Invalid email or password")
+        raise HTTPException(401, "Felaktig e-post eller lösenord")
+    status = user.get("status", "active")
+    if status == "deactivated":
+        raise HTTPException(403, "Ditt konto är avaktiverat. Kontakta administratören.")
+    if status == "banned":
+        raise HTTPException(403, "Ditt konto är blockerat. Kontakta administratören.")
+    if status == "deleted":
+        raise HTTPException(403, "Kontot är borttaget.")
+    await db.users.update_one({"id": user["id"]}, {"$set": {"last_login": now_utc().isoformat()}})
+    user["last_login"] = now_utc().isoformat()
     token = create_access_token(user["id"], user["email"])
     set_auth_cookie(response, token)
     user.pop("password_hash", None)
@@ -375,25 +412,44 @@ async def match_predictions_visible(match_id: str, user: dict = Depends(get_curr
 # ============== Tournament Predictions ==============
 @api.post("/tournament-predictions")
 async def submit_tp(req: TournamentPredictionReq, user: dict = Depends(get_current_user)):
-    # Validate unique selection per group ranking
-    for g, ids in req.group_rankings.items():
-        if len(ids) != len(set([x for x in ids if x])):
-            raise HTTPException(400, f"Duplicate team in group {g} ranking")
+    # Check version is not locked (deadline passed)
+    dl_iso = await get_deadline_value(req.version)
+    deadline_passed = False
+    if dl_iso:
+        dl = datetime.fromisoformat(dl_iso)
+        if dl.tzinfo is None:
+            dl = dl.replace(tzinfo=timezone.utc)
+        deadline_passed = now_utc() > dl
+    if deadline_passed:
+        raise HTTPException(400, f"Version {req.version} är låst och kan inte ändras")
+
+    # Validate group rankings: each group must have exactly 4 unique team IDs that all belong to that group
+    teams_in_groups = {}
+    teams = await db.teams.find({}, {"_id": 0, "id": 1, "group": 1}).to_list(200)
+    for t in teams:
+        teams_in_groups.setdefault(t["group"], set()).add(t["id"])
+    if req.group_rankings:
+        for g, ids in req.group_rankings.items():
+            if g not in teams_in_groups:
+                raise HTTPException(400, f"Okänd grupp: {g}")
+            if len(ids) != 4:
+                raise HTTPException(400, f"Grupp {g}: exakt 4 lag måste rankas (1:a–4:e)")
+            if any(not x for x in ids):
+                raise HTTPException(400, f"Grupp {g}: alla fyra platser måste fyllas i")
+            if len(set(ids)) != 4:
+                raise HTTPException(400, f"Grupp {g}: varje lag får bara väljas en gång")
+            for tid in ids:
+                if tid not in teams_in_groups[g]:
+                    raise HTTPException(400, f"Grupp {g}: ett av lagen tillhör inte gruppen")
+
     doc = {
         "id": str(uuid.uuid4()), "user_id": user["id"], "version": req.version,
         "group_rankings": req.group_rankings,
         "advancing": req.advancing, "r32": req.r32, "r16": req.r16, "qf": req.qf,
         "sf": req.sf, "finalists": req.finalists, "champion": req.champion,
         "submitted_at": now_utc().isoformat(),
+        "is_late": False,
     }
-    cfg = await db.config.find_one({"key": "v1_deadline"}) or {}
-    is_late = False
-    if req.version == 1 and cfg.get("value"):
-        dl = datetime.fromisoformat(cfg["value"])
-        if dl.tzinfo is None:
-            dl = dl.replace(tzinfo=timezone.utc)
-        is_late = now_utc() > dl
-    doc["is_late"] = is_late
     await db.tournament_predictions.update_one(
         {"user_id": user["id"], "version": req.version},
         {"$set": doc}, upsert=True,
@@ -404,21 +460,66 @@ async def submit_tp(req: TournamentPredictionReq, user: dict = Depends(get_curre
 async def my_tp(user: dict = Depends(get_current_user)):
     return await db.tournament_predictions.find({"user_id": user["id"]}, {"_id": 0}).to_list(10)
 
+@api.get("/tournament-predictions/visible")
+async def visible_tp(user: dict = Depends(get_current_user)):
+    """Return other users' tournament predictions for each version where the requesting user's own version is locked (deadline passed)."""
+    out = {}
+    for v in (1, 2, 3, 4):
+        dl_iso = await get_deadline_value(v)
+        if not dl_iso:
+            continue
+        dl = datetime.fromisoformat(dl_iso)
+        if dl.tzinfo is None:
+            dl = dl.replace(tzinfo=timezone.utc)
+        if now_utc() <= dl and user.get("role") != "admin":
+            continue
+        docs = await db.tournament_predictions.find({"version": v}, {"_id": 0}).to_list(2000)
+        users = await db.users.find({"id": {"$in": [d["user_id"] for d in docs]}}, {"_id": 0, "name": 1, "id": 1}).to_list(2000)
+        umap = {u["id"]: u for u in users}
+        for d in docs:
+            d["user_name"] = umap.get(d["user_id"], {}).get("name", "Spelare")
+        out[str(v)] = docs
+    return out
+
 @api.get("/tournament-predictions/all", dependencies=[Depends(require_admin)])
 async def all_tp():
     return await db.tournament_predictions.find({}, {"_id": 0}).to_list(2000)
 
 # ============== Config (deadlines) ==============
+DEADLINE_KEYS = {1: "v1_deadline", 2: "v2_deadline", 3: "v3_deadline", 4: "v4_deadline"}
+
+async def get_deadline_value(version: int) -> Optional[str]:
+    key = DEADLINE_KEYS.get(version)
+    if not key:
+        return None
+    cfg = await db.config.find_one({"key": key}, {"_id": 0}) or {}
+    return cfg.get("value")
+
 @api.get("/config/v1-deadline")
 async def get_v1_deadline():
-    cfg = await db.config.find_one({"key": "v1_deadline"}, {"_id": 0}) or {}
-    return {"deadline": cfg.get("value")}
+    return {"deadline": await get_deadline_value(1)}
 
 @api.post("/config/v1-deadline", dependencies=[Depends(require_admin)])
 async def set_v1_deadline(req: V1DeadlineReq, admin: dict = Depends(require_admin)):
     dl = req.deadline.isoformat() if isinstance(req.deadline, datetime) else req.deadline
+    prev = await get_deadline_value(1)
     await db.config.update_one({"key": "v1_deadline"}, {"$set": {"key": "v1_deadline", "value": dl}}, upsert=True)
-    await log_audit(admin, "v1_deadline_set", {"deadline": dl})
+    await log_audit(admin, "deadline_changed", {"version": 1, "old_value": prev, "new_value": dl})
+    return {"ok": True}
+
+@api.get("/config/deadlines")
+async def get_all_deadlines():
+    return {str(v): await get_deadline_value(v) for v in (1, 2, 3, 4)}
+
+@api.post("/config/v{version}-deadline", dependencies=[Depends(require_admin)])
+async def set_version_deadline(version: int, req: DeadlineReq, admin: dict = Depends(require_admin)):
+    if version not in DEADLINE_KEYS:
+        raise HTTPException(400, "Ogiltig version")
+    key = DEADLINE_KEYS[version]
+    dl = req.deadline.isoformat() if isinstance(req.deadline, datetime) else req.deadline
+    prev = await get_deadline_value(version)
+    await db.config.update_one({"key": key}, {"$set": {"key": key, "value": dl}}, upsert=True)
+    await log_audit(admin, "deadline_changed", {"version": version, "old_value": prev, "new_value": dl})
     return {"ok": True}
 
 # ============== Scoring ==============
@@ -730,7 +831,11 @@ async def admin_progress():
 # ============== Leaderboard ==============
 @api.get("/leaderboard")
 async def leaderboard():
-    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    # Only active users on leaderboard
+    users = await db.users.find(
+        {"$or": [{"status": "active"}, {"status": {"$exists": False}}]},
+        {"_id": 0, "password_hash": 0},
+    ).to_list(1000)
     rows = []
     for u in users:
         live = u.get("live_points", 0) or 0
@@ -748,23 +853,84 @@ async def leaderboard():
 # ============== Admin: Users & Invites ==============
 @api.get("/admin/users", dependencies=[Depends(require_admin)])
 async def admin_users():
-    return await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    # Ensure status defaults to active for legacy docs
+    for u in users:
+        u.setdefault("status", "active")
+    return users
 
 @api.put("/admin/users/{user_id}/role")
 async def set_user_role(user_id: str, role: dict, admin: dict = Depends(require_admin)):
     new_role = role.get("role")
     if new_role not in ("admin", "user"):
-        raise HTTPException(400, "Invalid role")
+        raise HTTPException(400, "Ogiltig roll")
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "name": 1, "email": 1})
+    if not u:
+        raise HTTPException(404, "Användaren hittades inte")
     await db.users.update_one({"id": user_id}, {"$set": {"role": new_role}})
-    await log_audit(admin, "user_role_change", {"user_id": user_id, "new_role": new_role})
+    await log_audit(admin, "role_changed", {
+        "user_id": user_id, "user_email": u.get("email"),
+        "old_value": u.get("role"), "new_value": new_role,
+    })
+    return {"ok": True}
+
+@api.put("/admin/users/{user_id}/status")
+async def set_user_status(user_id: str, req: UserStatusReq, admin: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(404, "Användaren hittades inte")
+    if req.status == "banned" and not (req.reason or "").strip():
+        raise HTTPException(400, "Anledning krävs vid blockering")
+    updates = {"status": req.status}
+    if req.status == "banned":
+        updates["ban_reason"] = req.reason
+        updates["banned_at"] = now_utc().isoformat()
+        updates["banned_by"] = admin.get("name")
+    elif req.status == "active":
+        updates["ban_reason"] = None
+        updates["banned_at"] = None
+        updates["banned_by"] = None
+    await db.users.update_one({"id": user_id}, {"$set": updates})
+    action_map = {
+        "active": "user_activated", "deactivated": "user_deactivated", "banned": "user_banned",
+    }
+    await log_audit(admin, action_map[req.status], {
+        "user_id": user_id, "user_email": u.get("email"),
+        "old_value": u.get("status", "active"), "new_value": req.status,
+        "reason": req.reason,
+    })
+    return {"ok": True}
+
+@api.post("/admin/users/{user_id}/unban")
+async def unban_user(user_id: str, admin: dict = Depends(require_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(404, "Användaren hittades inte")
+    await db.users.update_one({"id": user_id}, {"$set": {
+        "status": "active", "ban_reason": None, "banned_at": None, "banned_by": None,
+    }})
+    await log_audit(admin, "user_unbanned", {
+        "user_id": user_id, "user_email": u.get("email"),
+        "old_value": u.get("status"), "new_value": "active",
+    })
     return {"ok": True}
 
 @api.delete("/admin/users/{user_id}")
-async def delete_user(user_id: str, admin: dict = Depends(require_admin)):
+async def delete_user(user_id: str, req: UserDeleteReq, admin: dict = Depends(require_admin)):
+    if req.confirmation != "DELETE":
+        raise HTTPException(400, "Bekräftelse krävs. Skriv DELETE för att radera permanent.")
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(404, "Användaren hittades inte")
+    if u.get("email") == ADMIN_EMAIL:
+        raise HTTPException(400, "Det primära administratörskontot kan inte raderas")
     await db.users.delete_one({"id": user_id})
     await db.match_predictions.delete_many({"user_id": user_id})
     await db.tournament_predictions.delete_many({"user_id": user_id})
-    await log_audit(admin, "user_delete", {"user_id": user_id})
+    await log_audit(admin, "user_deleted", {
+        "user_id": user_id, "user_email": u.get("email"),
+        "reason": req.reason, "old_value": u.get("status"), "new_value": "deleted",
+    })
     return {"ok": True}
 
 @api.post("/admin/invite", dependencies=[Depends(require_admin)])
@@ -844,6 +1010,41 @@ async def manual_advance(req: ManualAdvanceReq, admin: dict = Depends(require_ad
 async def get_audit_log(limit: int = 200):
     logs = await db.audit_log.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
     return logs
+
+# ============== Hall of Fame ==============
+@api.get("/hall-of-fame")
+async def list_hall_of_fame():
+    rows = await db.hall_of_fame.find({}, {"_id": 0}).sort("year", -1).to_list(200)
+    return rows
+
+@api.post("/hall-of-fame", dependencies=[Depends(require_admin)])
+async def create_hall_of_fame(req: HallOfFameReq, admin: dict = Depends(require_admin)):
+    existing = await db.hall_of_fame.find_one({"year": req.year})
+    if existing:
+        raise HTTPException(400, f"Året {req.year} finns redan i Hall of Fame")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "year": req.year,
+        "winner_name": req.winner_name,
+        "winner_points": req.winner_points,
+        "second_name": req.second_name,
+        "second_points": req.second_points,
+        "third_name": req.third_name,
+        "third_points": req.third_points,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.hall_of_fame.insert_one(doc)
+    await log_audit(admin, "hall_of_fame_created", {"year": req.year})
+    doc.pop("_id", None)
+    return doc
+
+@api.delete("/hall-of-fame/{year}", dependencies=[Depends(require_admin)])
+async def delete_hall_of_fame(year: int, admin: dict = Depends(require_admin)):
+    res = await db.hall_of_fame.delete_one({"year": year})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "År saknas")
+    await log_audit(admin, "hall_of_fame_deleted", {"year": year})
+    return {"ok": True}
 
 # ============== Admin: Excel Import ==============
 SWE_TZ_OFFSET_HOURS = 2  # Treat Excel times as Europe/Stockholm summer (UTC+2). Store as UTC ISO.

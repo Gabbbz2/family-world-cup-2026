@@ -60,6 +60,11 @@ export default function Dashboard() {
           <span className="flex items-center gap-2"><Strategy size={20} weight="fill" /> Skicka turneringstips</span>
           <CaretRight size={18} weight="bold" />
         </Link>
+        <Link to="/hall-of-fame" data-testid="cta-hall-of-fame"
+          className="mt-2 inline-flex items-center justify-between w-full border border-white/10 text-zinc-300 px-4 py-2 font-bold uppercase tracking-widest text-xs hover:border-[#FFCC00] hover:text-[#FFCC00] transition-all">
+          <span>Hall of Fame</span>
+          <CaretRight size={14} weight="bold" />
+        </Link>
       </section>
 
       {/* Upcoming */}

@@ -4,6 +4,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { FlagTeam } from "../components/FlagTeam";
 import { LockKey, CheckCircle, EyeSlash, Clock, Television } from "@phosphor-icons/react";
 import { fmtSwedishDateLong, fmtSwedishTime } from "../lib/dates";
+import { useCountdown } from "../lib/countdown";
 
 const LOCK_OFFSET_MS = 5 * 60 * 1000; // Predictions lock 5 minutes before kickoff
 
@@ -15,8 +16,10 @@ function fmtKickoff(iso) {
 function MatchRow({ match, myPred, onSubmit }) {
   const kickoffMs = new Date(match.kickoff).getTime();
   const lockMs = kickoffMs - LOCK_OFFSET_MS;
+  const lockIso = new Date(lockMs).toISOString();
   const nowMs = Date.now();
   const locked = nowMs >= lockMs;
+  const countdown = useCountdown(locked ? null : lockIso);
   const finished = match.status === "finished" && match.home_score !== null && match.away_score !== null;
   const hasTeams = match.home_team && match.away_team;
   const [h, setH] = useState(myPred?.home_score ?? "");
@@ -127,8 +130,8 @@ function MatchRow({ match, myPred, onSubmit }) {
           </div>
         )}
         {!locked && (
-          <div className="text-[10px] text-zinc-600 mt-2 uppercase tracking-widest">
-            Tippning stänger 5 minuter före avspark
+          <div className="text-[10px] text-zinc-600 mt-2 uppercase tracking-widest" data-testid={`countdown-${match.id}`}>
+            {countdown ? countdown : "Tippning stänger 5 minuter före avspark"}
           </div>
         )}
         {err && <div className="text-[#FF3B30] text-xs mt-2">{err}</div>}

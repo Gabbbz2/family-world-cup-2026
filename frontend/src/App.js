@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard";
 import Matches from "./pages/Matches";
 import Leaderboard from "./pages/Leaderboard";
 import TournamentPrediction from "./pages/TournamentPrediction";
+import HallOfFame from "./pages/HallOfFame";
 import Admin from "./pages/Admin";
 
 function Shell({ children }) {
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="/matches" element={<Shell><Matches /></Shell>} />
           <Route path="/leaderboard" element={<Shell><Leaderboard /></Shell>} />
           <Route path="/tournament" element={<Shell><TournamentPrediction /></Shell>} />
+          <Route path="/hall-of-fame" element={<Shell><HallOfFame /></Shell>} />
           <Route path="/admin" element={<AdminShell><Admin /></AdminShell>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
