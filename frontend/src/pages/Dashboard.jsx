@@ -36,28 +36,28 @@ export default function Dashboard() {
       {/* Welcome */}
       <section className="relative overflow-hidden surface p-6">
         <div className="absolute -right-12 -top-12 w-48 h-48 rounded-full bg-[#00F0FF]/10 blur-3xl" />
-        <div className="label-eyebrow">Welcome back</div>
+        <div className="label-eyebrow">Välkommen tillbaka</div>
         <h1 className="font-display font-black text-3xl sm:text-4xl tracking-tighter mt-1" data-testid="dashboard-greeting">
-          {user.name?.split(" ")[0] || "Player"}.
+          {user.name?.split(" ")[0] || "Spelare"}.
         </h1>
-        <p className="text-zinc-400 mt-2 text-sm">Lock in your picks before kick-off. Hidden until the whistle.</p>
+        <p className="text-zinc-400 mt-2 text-sm">Lås dina tips före avspark. Dolda till matchen är slut.</p>
         <div className="grid grid-cols-3 gap-3 mt-5">
           <div className="border border-white/10 p-3">
-            <div className="label-eyebrow">Rank</div>
+            <div className="label-eyebrow">Placering</div>
             <div className="font-display font-black text-2xl text-[#00F0FF]" data-testid="my-rank">{myRow ? `#${myRow.rank}` : "—"}</div>
           </div>
           <div className="border border-white/10 p-3">
-            <div className="label-eyebrow">Live Pts</div>
+            <div className="label-eyebrow">Livepoäng</div>
             <div className="font-display font-black text-2xl" data-testid="my-live-pts">{myRow?.live_points ?? 0}</div>
           </div>
           <div className="border border-white/10 p-3">
-            <div className="label-eyebrow">Total</div>
+            <div className="label-eyebrow">Totalt</div>
             <div className="font-display font-black text-2xl text-[#39FF14]" data-testid="my-total-pts">{myRow?.total_points ?? 0}</div>
           </div>
         </div>
         <Link to="/tournament" data-testid="cta-tournament"
           className="mt-5 inline-flex items-center justify-between w-full bg-[#00F0FF] text-black px-4 py-3 font-bold uppercase tracking-widest text-sm hover:bg-white transition-all">
-          <span className="flex items-center gap-2"><Strategy size={20} weight="fill" /> Submit Tournament Prediction</span>
+          <span className="flex items-center gap-2"><Strategy size={20} weight="fill" /> Skicka turneringstips</span>
           <CaretRight size={18} weight="bold" />
         </Link>
       </section>
@@ -66,12 +66,12 @@ export default function Dashboard() {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-display font-bold text-xl flex items-center gap-2">
-            <CalendarBlank size={20} weight="fill" className="text-[#00F0FF]" /> Upcoming Matches
+            <CalendarBlank size={20} weight="fill" className="text-[#00F0FF]" /> Kommande matcher
           </h2>
-          <Link to="/matches" data-testid="cta-matches" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">View all</Link>
+          <Link to="/matches" data-testid="cta-matches" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">Visa alla</Link>
         </div>
         <div className="surface divide-y divide-white/10">
-          {upcoming.length === 0 && <div className="p-6 text-zinc-500 text-sm text-center">No upcoming matches yet.</div>}
+          {upcoming.length === 0 && <div className="p-6 text-zinc-500 text-sm text-center">Inga kommande matcher.</div>}
           {upcoming.map((m) => (
             <Link to="/matches" key={m.id} data-testid={`dash-match-${m.id}`}
               className="block p-3 hover:bg-white/5 transition-all">
@@ -96,18 +96,18 @@ export default function Dashboard() {
       {groupKeys.length > 0 && (
         <section>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-display font-bold text-xl">Group Standings</h2>
-            <Link to="/matches" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">All matches</Link>
+            <h2 className="font-display font-bold text-xl">Gruppställning</h2>
+            <Link to="/matches" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">Alla matcher</Link>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {groupKeys.map((g) => (
               <div key={g} className="surface p-3" data-testid={`dash-standings-${g}`}>
-                <div className="label-eyebrow mb-2">Group {g}</div>
+                <div className="label-eyebrow mb-2">Grupp {g}</div>
                 <table className="w-full text-xs">
                   <thead className="text-zinc-500">
                     <tr>
-                      <th className="text-left">Team</th>
-                      <th>P</th><th>W</th><th>D</th><th>L</th><th>GD</th><th>Pts</th>
+                      <th className="text-left">Lag</th>
+                      <th>S</th><th>V</th><th>O</th><th>F</th><th>MS</th><th>P</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -139,14 +139,14 @@ export default function Dashboard() {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-display font-bold text-xl flex items-center gap-2">
-            <Trophy size={20} weight="fill" className="text-[#39FF14]" /> Leaderboard
+            <Trophy size={20} weight="fill" className="text-[#39FF14]" /> Topplista
           </h2>
-          <Link to="/leaderboard" data-testid="cta-leaderboard" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">See full board</Link>
+          <Link to="/leaderboard" data-testid="cta-leaderboard" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">Hela listan</Link>
         </div>
         <div className="surface">
           <div className="grid grid-cols-12 gap-2 px-3 py-2 label-eyebrow border-b border-white/10">
-            <div className="col-span-1">#</div><div className="col-span-5">Player</div>
-            <div className="col-span-2 text-right">Live</div><div className="col-span-2 text-right">Strat</div><div className="col-span-2 text-right">Total</div>
+            <div className="col-span-1">#</div><div className="col-span-5">Spelare</div>
+            <div className="col-span-2 text-right">Live</div><div className="col-span-2 text-right">Strat</div><div className="col-span-2 text-right">Totalt</div>
           </div>
           {board.slice(0, 5).map((r) => (
             <div key={r.user_id} data-testid={`dash-board-row-${r.user_id}`}

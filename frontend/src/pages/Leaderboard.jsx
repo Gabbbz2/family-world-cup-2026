@@ -35,18 +35,18 @@ export default function Leaderboard() {
         />
         <div className="absolute inset-0 bg-gradient-to-r from-[#0A0A0A] via-[#0A0A0A]/60 to-transparent" />
         <div className="relative">
-          <div className="label-eyebrow">Family Standings</div>
-          <h1 className="font-display font-black text-4xl tracking-tighter">Leaderboard.</h1>
-          <p className="text-zinc-300 text-sm mt-2 max-w-md">Total = Live + Strategy. Live grows match-by-match; Strategy is your tournament foresight.</p>
+          <div className="label-eyebrow">Familjens ställning</div>
+          <h1 className="font-display font-black text-4xl tracking-tighter">Topplista.</h1>
+          <p className="text-zinc-300 text-sm mt-2 max-w-md">Total = Live + Strategi. Live växer match för match; Strategi är dina turneringstips.</p>
         </div>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-2">
         {[
-          { id: "total", label: "Total Points" },
-          { id: "live", label: "Live Points" },
-          { id: "strategy", label: "Strategy Points" },
+          { id: "total", label: "Totalpoäng" },
+          { id: "live", label: "Livepoäng" },
+          { id: "strategy", label: "Strategipoäng" },
         ].map((t) => (
           <button
             key={t.id}
@@ -66,10 +66,10 @@ export default function Leaderboard() {
       <div className="surface">
         <div className="grid grid-cols-12 gap-2 px-3 py-2 label-eyebrow border-b border-white/10">
           <div className="col-span-1">#</div>
-          <div className="col-span-5">Player</div>
+          <div className="col-span-5">Spelare</div>
           <div className="col-span-2 text-right">Live</div>
           <div className="col-span-2 text-right">Strat</div>
-          <div className="col-span-2 text-right">Total</div>
+          <div className="col-span-2 text-right">Totalt</div>
         </div>
         {sorted.map((r, idx) => (
           <div
@@ -95,7 +95,7 @@ export default function Leaderboard() {
           </div>
         ))}
         {sorted.length === 0 && (
-          <div className="p-6 text-center text-zinc-500 text-sm">No players yet.</div>
+          <div className="p-6 text-center text-zinc-500 text-sm">Inga spelare ännu.</div>
         )}
       </div>
     </div>

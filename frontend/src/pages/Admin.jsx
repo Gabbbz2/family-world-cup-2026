@@ -311,8 +311,8 @@ function DeadlineTab() {
   };
 
   return (
-    <Section title="Version 1 Submission Deadline">
-      <p className="text-zinc-500 text-xs mb-3">Entered in Swedish local time (Europe/Stockholm). After this timestamp, V1 tournament submissions will be flagged as LATE for everyone.</p>
+    <Section title="Version 1 deadline">
+      <p className="text-zinc-500 text-xs mb-3">Anges i svensk lokaltid (Europe/Stockholm). Standardvärde: 2026-06-11 20:55 (5 min före första matchen). Tips inskickade efter denna tidpunkt markeras LATE internt.</p>
       <div className="flex gap-2 items-center flex-wrap">
         <input type="datetime-local" data-testid="deadline-input" value={deadline} onChange={(e) => setDeadline(e.target.value)}
           className="bg-[#0A0A0A] border border-white/10 px-3 py-2 text-sm" />

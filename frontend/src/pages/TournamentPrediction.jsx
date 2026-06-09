@@ -5,10 +5,10 @@ import { Crown, Strategy as StrategyIcon, Star, Lightning, ArrowUp, ArrowDown } 
 import { fmtSwedishCompact } from "../lib/dates";
 
 const VERSIONS = [
-  { v: 1, label: "Version 1", mult: 1.0, hint: "Most points (100%)", color: "#00F0FF" },
-  { v: 2, label: "Version 2", mult: 0.75, hint: "75% multiplier", color: "#39FF14" },
-  { v: 3, label: "Version 3", mult: 0.50, hint: "50% multiplier", color: "#FFCC00" },
-  { v: 4, label: "Version 4", mult: 0.25, hint: "25% multiplier", color: "#FF3B30" },
+  { v: 1, label: "Version 1", mult: 1.0, hint: "Max poäng (100 %)", color: "#00F0FF" },
+  { v: 2, label: "Version 2", mult: 0.75, hint: "75 % multiplikator", color: "#39FF14" },
+  { v: 3, label: "Version 3", mult: 0.50, hint: "50 % multiplikator", color: "#FFCC00" },
+  { v: 4, label: "Version 4", mult: 0.25, hint: "25 % multiplikator", color: "#FF3B30" },
 ];
 
 function GroupRankingBox({ group, teams, ranking, onChange }) {
@@ -21,11 +21,11 @@ function GroupRankingBox({ group, teams, ranking, onChange }) {
     next[pos] = teamId;
     onChange(next);
   };
-  const positionLabels = ["1st", "2nd", "3rd", "4th"];
+  const positionLabels = ["1:a", "2:a", "3:e", "4:e"];
   const positionColors = ["#FFCC00", "#A1A1AA", "#FF8A3D", "#FF3B30"];
   return (
     <div className="surface p-3" data-testid={`group-${group}`}>
-      <div className="label-eyebrow mb-3">Group {group}</div>
+      <div className="label-eyebrow mb-3">Grupp {group}</div>
       <div className="space-y-2">
         {positionLabels.map((label, idx) => {
           const currentId = ranking[idx] || "";
@@ -40,7 +40,7 @@ function GroupRankingBox({ group, teams, ranking, onChange }) {
                 onChange={(e) => setPosition(idx, e.target.value)}
                 className="flex-1 bg-[#0A0A0A] border border-white/10 px-2 py-2 text-sm text-white focus:border-[#00F0FF] outline-none"
               >
-                <option value="">— Select team —</option>
+                <option value="">— Välj lag —</option>
                 {teams.map((t) => (
                   <option key={t.id} value={t.id} disabled={pickedSet.has(t.id) && t.id !== currentId}>
                     {t.team_name}
@@ -150,7 +150,7 @@ export default function TournamentPrediction() {
       const payload = { version, ...pred };
       const { data } = await api.post("/tournament-predictions", payload);
       setExisting((prev) => ({ ...prev, [version]: data }));
-      setSaved(`Version ${version} saved` + (data.is_late ? " · LATE (after deadline)" : ""));
+      setSaved(`Version ${version} sparad`);
     } catch (e) {
       setErr(formatError(e));
     }
@@ -162,15 +162,21 @@ export default function TournamentPrediction() {
   return (
     <div className="space-y-6">
       <div>
-        <div className="label-eyebrow">Strategy · Tournament Picks</div>
-        <h1 className="font-display font-black text-3xl tracking-tighter">Tournament Prediction</h1>
+        <div className="label-eyebrow">Strategi · Turneringstips</div>
+        <h1 className="font-display font-black text-3xl tracking-tighter">Turneringstips</h1>
         <p className="text-zinc-500 text-sm mt-1">
-          Strategy pts: Group winner +5 · Advancing +3 · R32 +4 · R16 +6 · QF +8 · SF +12 · Final +20 · Champion +30.
+          Strategipoäng: Gruppvinnare +5 · Vidare från grupp +3 · Åttondelsfinal +4 · Sextondelsfinal +6 · Kvartsfinal +8 · Semifinal +12 · Final +20 · Mästare +30.
         </p>
         {version === 1 && deadline && (
-          <div className={`mt-2 text-xs px-3 py-2 border ${deadlinePassed ? "border-[#FF3B30] text-[#FF3B30]" : "border-[#FFCC00] text-[#FFCC00]"}`}>
-            <span className="font-bold uppercase tracking-widest">V1 Deadline:</span> {fmtSwedishCompact(deadline)} (Europe/Stockholm) {deadlinePassed && "· PASSED (late flag)"}
-          </div>
+          deadlinePassed ? (
+            <div className="mt-2 text-xs px-3 py-2 border border-white/10 text-zinc-400" data-testid="v1-closed-banner">
+              Version 1 är stängd.
+            </div>
+          ) : (
+            <div className="mt-2 text-xs px-3 py-2 border border-[#FFCC00] text-[#FFCC00]" data-testid="v1-open-banner">
+              <span className="font-bold uppercase tracking-widest">Version 1 stänger:</span> {fmtSwedishCompact(deadline)} (Europe/Stockholm)
+            </div>
+          )
         )}
       </div>
 
@@ -188,7 +194,7 @@ export default function TournamentPrediction() {
             <div className="label-eyebrow" style={{ color: v.color }}>{v.label}</div>
             <div className="text-xs text-zinc-400 mt-1">{v.hint}</div>
             {existing[v.v] && (
-              <div className="text-[10px] uppercase tracking-widest text-[#39FF14] mt-2">Saved {existing[v.v].is_late ? "· LATE" : ""}</div>
+              <div className="text-[10px] uppercase tracking-widest text-[#39FF14] mt-2">Sparad</div>
             )}
           </button>
         ))}
@@ -196,15 +202,15 @@ export default function TournamentPrediction() {
 
       <div className="surface p-3 text-xs text-zinc-400 flex items-center gap-2">
         <Lightning size={16} className="text-[#00F0FF]" weight="fill" />
-        Current multiplier: <span className="text-white font-bold">{Math.round(currentMult * 100)}%</span>
+        Aktuell multiplikator: <span className="text-white font-bold">{Math.round(currentMult * 100)} %</span>
       </div>
 
       {/* Group rankings 1st-4th */}
       <section>
         <h2 className="font-display font-bold text-xl mb-3 flex items-center gap-2">
-          <StrategyIcon size={20} weight="fill" className="text-[#00F0FF]" /> Group Stage — Rank 1st to 4th
+          <StrategyIcon size={20} weight="fill" className="text-[#00F0FF]" /> Gruppspel — placering 1 till 4
         </h2>
-        <p className="text-zinc-500 text-xs mb-3">Each team may only be selected once per group.</p>
+        <p className="text-zinc-500 text-xs mb-3">Varje lag kan bara väljas en gång per grupp.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {Object.keys(groups).sort().map((g) => (
             <GroupRankingBox
@@ -220,17 +226,17 @@ export default function TournamentPrediction() {
 
       {/* Bracket stages */}
       <section>
-        <h2 className="font-display font-bold text-xl mb-3">Knockout Bracket</h2>
-        <p className="text-zinc-500 text-xs mb-3">Pick teams advancing through each round. Tap to toggle.</p>
+        <h2 className="font-display font-bold text-xl mb-3">Slutspelsträd</h2>
+        <p className="text-zinc-500 text-xs mb-3">Välj lagen som går vidare i varje omgång. Tryck för att markera.</p>
         <div className="overflow-x-auto no-scrollbar">
           <div className="grid grid-cols-6 gap-3 min-w-[900px]">
             {[
-              { key: "advancing", label: "Advancing (Group→KO)", color: "#A1A1AA", limit: 32 },
-              { key: "r16", label: "Round of 16", color: "#00F0FF", limit: 16 },
-              { key: "qf", label: "Quarter-finals", color: "#39FF14", limit: 8 },
-              { key: "sf", label: "Semi-finals", color: "#FFCC00", limit: 4 },
-              { key: "finalists", label: "Finalists", color: "#FF3B30", limit: 2 },
-              { key: "champion", label: "Champion", color: "#FFFFFF" },
+              { key: "advancing", label: "Vidare från grupp", color: "#A1A1AA", limit: 32 },
+              { key: "r16", label: "Åttondelsfinal", color: "#00F0FF", limit: 16 },
+              { key: "qf", label: "Kvartsfinal", color: "#39FF14", limit: 8 },
+              { key: "sf", label: "Semifinal", color: "#FFCC00", limit: 4 },
+              { key: "finalists", label: "Finalister", color: "#FF3B30", limit: 2 },
+              { key: "champion", label: "Mästare", color: "#FFFFFF" },
             ].map((stage) => (
               <div key={stage.key} className="surface p-3" data-testid={`stage-${stage.key}`}>
                 <div className="label-eyebrow mb-2" style={{ color: stage.color }}>{stage.label}</div>
@@ -242,7 +248,7 @@ export default function TournamentPrediction() {
                       onChange={(e) => setPred((p) => ({ ...p, champion: e.target.value }))}
                       className="w-full bg-[#0A0A0A] border border-white/10 px-2 py-2 text-sm text-white focus:border-[#00F0FF] outline-none"
                     >
-                      <option value="">Pick champion</option>
+                      <option value="">Välj mästare</option>
                       {allTeams.map((t) => (
                         <option key={t.id} value={t.id}>{t.team_name}</option>
                       ))}
@@ -264,7 +270,7 @@ export default function TournamentPrediction() {
                   />
                 )}
                 <div className="mt-2 text-[10px] text-zinc-500">
-                  Picked: {stage.key === "champion" ? (pred.champion ? 1 : 0) : pred[stage.key].length}{stage.limit ? ` / ${stage.limit}` : ""}
+                  Valda: {stage.key === "champion" ? (pred.champion ? 1 : 0) : pred[stage.key].length}{stage.limit ? ` / ${stage.limit}` : ""}
                 </div>
               </div>
             ))}
@@ -281,7 +287,7 @@ export default function TournamentPrediction() {
           onClick={submit}
           className="w-full bg-[#00F0FF] text-black font-bold uppercase tracking-widest py-4 hover:bg-white transition-all"
         >
-          <span className="inline-flex items-center gap-2"><Star size={20} weight="fill" /> Save Version {version} Predictions</span>
+          <span className="inline-flex items-center gap-2"><Star size={20} weight="fill" /> Spara Version {version}</span>
         </button>
       </div>
     </div>

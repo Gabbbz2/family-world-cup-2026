@@ -45,20 +45,20 @@ export default function Login() {
             <div className="w-10 h-10 grid place-items-center bg-[#00F0FF] text-black">
               <SoccerBall size={24} weight="fill" />
             </div>
-            <div className="label-eyebrow">Family • FIFA Prediction</div>
+            <div className="label-eyebrow">Familjens VM-tipsspel</div>
           </div>
           <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tighter leading-[0.9]">
             World Cup<br />
             <span className="text-[#00F0FF]">2026.</span>
           </h1>
           <p className="text-zinc-400 mt-3 text-sm">
-            Private prediction game for family & friends.
+            Privat tipsspel för familj och vänner.
           </p>
         </div>
 
         <form onSubmit={submit} className="space-y-4 surface p-6">
           <div>
-            <label className="label-eyebrow block mb-2">Email</label>
+            <label className="label-eyebrow block mb-2">E-post</label>
             <input
               data-testid="login-email-input"
               type="email"
@@ -67,11 +67,11 @@ export default function Login() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full bg-[#0A0A0A] border border-white/10 px-3 py-2 text-white focus:border-[#00F0FF] outline-none"
-              placeholder="you@example.com"
+              placeholder="du@exempel.se"
             />
           </div>
           <div>
-            <label className="label-eyebrow block mb-2">Password</label>
+            <label className="label-eyebrow block mb-2">Lösenord</label>
             <input
               data-testid="login-password-input"
               type="password"
@@ -92,12 +92,12 @@ export default function Login() {
             disabled={loading}
             className="w-full bg-[#00F0FF] text-black font-bold uppercase tracking-widest py-3 hover:bg-white transition-all disabled:opacity-50"
           >
-            {loading ? "Signing in…" : "Kick Off"}
+            {loading ? "Loggar in…" : "Kicka igång"}
           </button>
           <div className="text-sm text-zinc-400 text-center pt-2">
-            New here?{" "}
+            Ny här?{" "}
             <Link to="/register" data-testid="goto-register" className="text-[#00F0FF] hover:underline">
-              Create an account
+              Skapa konto
             </Link>
           </div>
         </form>

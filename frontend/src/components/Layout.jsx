@@ -45,7 +45,7 @@ export default function Layout({ children }) {
               <SoccerBall size={20} weight="fill" />
             </div>
             <div>
-              <div className="label-eyebrow">FAMILY • FIFA</div>
+              <div className="label-eyebrow">FAMILJ • FIFA</div>
               <div className="font-display font-black text-base leading-none">World Cup 2026</div>
             </div>
           </NavLink>
@@ -57,7 +57,7 @@ export default function Layout({ children }) {
               data-testid="logout-button"
               onClick={async () => { await logout(); navigate("/login"); }}
               className="text-zinc-400 hover:text-white"
-              title="Logout"
+              title="Logga ut"
             >
               <SignOut size={22} />
             </button>
@@ -70,10 +70,10 @@ export default function Layout({ children }) {
       {/* Bottom nav (mobile-first) */}
       <nav className="fixed bottom-0 left-0 right-0 z-30 bg-[#0A0A0A]/95 backdrop-blur border-t border-white/10">
         <div className="max-w-5xl mx-auto grid grid-cols-5">
-          <NavItem to="/dashboard" icon={House} label="Home" testid="nav-dashboard" />
-          <NavItem to="/matches" icon={SoccerBall} label="Matches" testid="nav-matches" />
-          <NavItem to="/leaderboard" icon={Trophy} label="Board" testid="nav-leaderboard" />
-          <NavItem to="/tournament" icon={Strategy} label="Predict" testid="nav-tournament" />
+          <NavItem to="/dashboard" icon={House} label="Hem" testid="nav-dashboard" />
+          <NavItem to="/matches" icon={SoccerBall} label="Matcher" testid="nav-matches" />
+          <NavItem to="/leaderboard" icon={Trophy} label="Topp" testid="nav-leaderboard" />
+          <NavItem to="/tournament" icon={Strategy} label="Tips" testid="nav-tournament" />
           {user && user.role === "admin" ? (
             <NavItem to="/admin" icon={GearSix} label="Admin" testid="nav-admin" />
           ) : (

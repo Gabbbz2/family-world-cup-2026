@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 4 end-to-end verification complete. All 7 acceptance criteria pass: (1) Backend POST /api/predictions returns HTTP 400 detail='Tippning stängd' when kickoff <= now+5min, returns 200 when >5min in future — verified with two ephemeral matches (kickoff +3min and +10min) cleaned up afterward. (2) GET /api/predictions/match/{id} returns {locked: True, predictions: []} for non-admin users on unfinished matches — verified by creating a regular invite-only test user and hitting the endpoint. Admin bypass also verified. (3) GET /api/config/v1-deadline returns a seeded default value (year 2026). (4) Frontend Matches page: when kickoff is within 5 min, the 'locked-{id}' badge renders 'Tippning stängd' and pred-save-{id} disappears (verified by creating kickoff-in-3min match, navigating, asserting selectors, then deleting). For >5min matches, inputs + 'Spara' button + caption 'Tippning stänger 5 minuter före avspark' all render. (5) Tournament Prediction page: with deadline in the past, calm zinc banner 'Version 1 är stängd' shows and no 'PASSED'/'LATE' strings appear; with deadline restored to 2026-06-11T18:55Z (default), the yellow warning 'Version 1 stänger: 2026-06-11 20:55 (Europe/Stockholm)' appears. (6) Late flag preserved internally (POST /tournament-predictions returns is_late=true after past deadline) but no longer surfaced as 'LATE'/'PASSED' in UI. (7) Swedish UI text verified across Login (Kicka igång, E-post, Lösenord), Dashboard (Välkommen tillbaka, Placering, Livepoäng, Totalt, Skicka turneringstips, Kommande matcher, Gruppställning), Matches (Matcher, Spara, Se andras tips, Kommande/Spelade/Alla/Gruppspel/Slutspel, 'Tippning stänger 5 minuter före avspark'), Tournament (Turneringstips, Gruppspel — placering 1 till 4, 1:a/2:a/3:e/4:e, Välj lag, Spara Version 1 - visible as 'SPARA VERSION 1' via CSS uppercase), Leaderboard (Topplista, Totalpoäng, Livepoäng, Strategipoäng, Spelare), Bottom nav (Hem/Matcher/Topp/Tips/Admin - rendered as HEM/MATCHER/TOPP/TIPS/ADMIN via CSS uppercase). Regression confirmed: /api/matches returns 104 matches, /api/teams returns 48 teams, /api/leaderboard works, /api/auth/me works.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1078 lines — getting large. Recommend extracting modules (auth, predictions, tournament, admin, scoring, import) into separate files in a future iteration. Not blocking.",
+    "server.py L343 lock check correctly uses now_utc() >= kickoff - timedelta(minutes=5); aligns 1:1 with frontend LOCK_OFFSET_MS = 5*60*1000 in Matches.jsx L8.",
+    "server.py L366 match_predictions_visible: non-admin gating now uses match.status == 'finished' (stricter than previous kickoff-based gate) — matches the iteration 4 spec exactly. Verified with a real non-admin user.",
+    "server.py L1031-1039 seeds default V1 deadline (2026-06-11T18:55:00+00:00 = 20:55 Europe/Stockholm) only when no config doc exists — idempotent, will not overwrite admin-set deadline on restart.",
+    "Matches.jsx correctly hides BOTH score inputs AND save button (lines 100-127 branch on `locked`) and shows 'Ditt tips' for users who already submitted, or 'Inget tips inskickat' otherwise — matches spec.",
+    "TournamentPrediction page renders Yellow warning 'Version 1 stänger' for future deadlines and a calm zinc 'Version 1 är stängd' for past — visually confirmed via screenshot on both states. No red banner, no 'PASSED'/'LATE' leaks.",
+    "Bottom nav and Spara button text use CSS uppercase — content in DOM is Swedish lowercase as required (Hem/Matcher/Topp/Tips/Admin, Spara Version 1)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration4.py"],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (all acceptance criteria met)"},
+  "test_credentials": "Admin: gabriella.bengtsson2@gmail.com / WorldCup2026!. Test user TEST_iter4_viewer@example.com / TestPass123! (created via invite during test; safe to leave or clean).",
+  "seed_data_creation": "Three ephemeral matches were created and DELETED during testing (kickoff +3min, +10min, +15min). One invite-only test user 'TEST_iter4_viewer@example.com' was created and left in DB (no cleanup needed; harmless). V1 deadline was temporarily set to 2020-01-01 and to a past timestamp by the tp_late_flag_stored test, then restored to default 2026-06-11T18:55:00+00:00.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 4 lock + Swedish + calm-banner verification: all green. Backend regression suite is in /app/backend/tests/test_iteration4.py (8 tests). If you re-run, the test user TEST_iter4_viewer@example.com already exists — register may 400, the test handles that by falling back to login. Future iterations: server.py is approaching 1100 lines; consider modularization. Also Tournament page yellow banner copy currently reads 'Version 1 stänger: <date> (Europe/Stockholm)' — verify wording stays unchanged in regressions."
+}

@@ -340,8 +340,8 @@ async def submit_prediction(req: PredictionReq, user: dict = Depends(get_current
     kickoff = datetime.fromisoformat(match["kickoff"]) if isinstance(match["kickoff"], str) else match["kickoff"]
     if kickoff.tzinfo is None:
         kickoff = kickoff.replace(tzinfo=timezone.utc)
-    if now_utc() >= kickoff:
-        raise HTTPException(400, "Predictions are locked for this match")
+    if now_utc() >= kickoff - timedelta(minutes=5):
+        raise HTTPException(400, "Tippning stängd")
     doc = {
         "id": str(uuid.uuid4()), "user_id": user["id"], "match_id": req.match_id,
         "home_score": req.home_score, "away_score": req.away_score,
@@ -362,10 +362,8 @@ async def match_predictions_visible(match_id: str, user: dict = Depends(get_curr
     match = await db.matches.find_one({"id": match_id}, {"_id": 0})
     if not match:
         raise HTTPException(404, "Match not found")
-    kickoff = datetime.fromisoformat(match["kickoff"]) if isinstance(match["kickoff"], str) else match["kickoff"]
-    if kickoff.tzinfo is None:
-        kickoff = kickoff.replace(tzinfo=timezone.utc)
-    if now_utc() < kickoff and user.get("role") != "admin":
+    # Others' predictions are revealed only after the match is finished.
+    if match.get("status") != "finished" and user.get("role") != "admin":
         return {"locked": True, "predictions": []}
     preds = await db.match_predictions.find({"match_id": match_id}, {"_id": 0}).to_list(500)
     users = await db.users.find({"id": {"$in": [p["user_id"] for p in preds]}}, {"_id": 0, "password_hash": 0}).to_list(500)
@@ -1029,6 +1027,16 @@ async def seed_admin():
             "live_points": 0, "strategy_points": 0,
         })
         logger.info("Seeded admin user")
+    # Default V1 deadline: 5 min before the first WC match (2026-06-11 20:55 Europe/Stockholm = 18:55 UTC)
+    cfg = await db.config.find_one({"key": "v1_deadline"})
+    if not cfg:
+        default_v1 = datetime(2026, 6, 11, 18, 55, 0, tzinfo=timezone.utc).isoformat()
+        await db.config.update_one(
+            {"key": "v1_deadline"},
+            {"$set": {"key": "v1_deadline", "value": default_v1}},
+            upsert=True,
+        )
+        logger.info(f"Seeded default V1 deadline: {default_v1}")
 
 async def seed_from_xlsx_if_needed():
     xlsx_path = DATA_DIR / "vm2026.xlsx"

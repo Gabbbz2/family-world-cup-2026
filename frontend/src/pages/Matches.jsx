@@ -5,13 +5,18 @@ import { FlagTeam } from "../components/FlagTeam";
 import { LockKey, CheckCircle, EyeSlash, Clock, Television } from "@phosphor-icons/react";
 import { fmtSwedishDateLong, fmtSwedishTime } from "../lib/dates";
 
+const LOCK_OFFSET_MS = 5 * 60 * 1000; // Predictions lock 5 minutes before kickoff
+
 function fmtKickoff(iso) {
   if (!iso) return "";
   return `${fmtSwedishDateLong(iso)} · ${fmtSwedishTime(iso)}`;
 }
 
 function MatchRow({ match, myPred, onSubmit }) {
-  const locked = new Date(match.kickoff) <= new Date();
+  const kickoffMs = new Date(match.kickoff).getTime();
+  const lockMs = kickoffMs - LOCK_OFFSET_MS;
+  const nowMs = Date.now();
+  const locked = nowMs >= lockMs;
   const finished = match.status === "finished" && match.home_score !== null && match.away_score !== null;
   const hasTeams = match.home_team && match.away_team;
   const [h, setH] = useState(myPred?.home_score ?? "");
@@ -21,11 +26,10 @@ function MatchRow({ match, myPred, onSubmit }) {
   const [othersOpen, setOthersOpen] = useState(false);
   const [others, setOthers] = useState(null);
 
-  let homeWon = false, awayWon = false, drew = false;
+  let homeWon = false, awayWon = false;
   if (finished) {
     if (match.home_score > match.away_score) homeWon = true;
     else if (match.away_score > match.home_score) awayWon = true;
-    else drew = true;
   }
 
   const submit = async () => {
@@ -53,10 +57,10 @@ function MatchRow({ match, myPred, onSubmit }) {
             </span>
           )}
           <span className="label-eyebrow">
-            {match.round || (match.stage === "Group Stage" || match.stage === "group" ? `Group ${match.group}` : match.stage)}
+            {match.round || (match.stage === "Group Stage" || match.stage === "group" ? `Grupp ${match.group}` : match.stage)}
           </span>
           {match.group && match.round && (
-            <span className="label-eyebrow text-[#00F0FF]">Group {match.group}</span>
+            <span className="label-eyebrow text-[#00F0FF]">Grupp {match.group}</span>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -92,14 +96,18 @@ function MatchRow({ match, myPred, onSubmit }) {
       {/* Prediction */}
       <div className="mt-4 border-t border-white/10 pt-3">
         {!hasTeams ? (
-          <div className="text-sm text-zinc-500">Teams to be determined — predictions open once placeholders are resolved.</div>
+          <div className="text-sm text-zinc-500">Lagen är inte fastställda — tippning öppnar när platshållarna är lösta.</div>
         ) : locked ? (
           <div className="flex items-center justify-between text-sm flex-wrap gap-2">
-            <span className="text-zinc-500 inline-flex items-center gap-1"><LockKey size={14} /> Predictions locked</span>
+            <span className="text-zinc-400 inline-flex items-center gap-1" data-testid={`locked-${match.id}`}>
+              <LockKey size={14} /> Tippning stängd
+            </span>
             {myPred ? (
-              <span className="text-[#00F0FF] font-mono">My pick: {myPred.home_score} : {myPred.away_score}</span>
+              <span className="text-[#00F0FF] font-mono" data-testid={`my-pick-${match.id}`}>
+                Ditt tips: <strong>{myPred.home_score} : {myPred.away_score}</strong>
+              </span>
             ) : (
-              <span className="text-zinc-600 text-xs">No pick submitted</span>
+              <span className="text-zinc-600 text-xs">Inget tips inskickat</span>
             )}
           </div>
         ) : (
@@ -113,9 +121,14 @@ function MatchRow({ match, myPred, onSubmit }) {
               className="w-14 bg-[#0A0A0A] border border-white/10 text-center py-2 focus:border-[#00F0FF]" placeholder="0" />
             <button data-testid={`pred-save-${match.id}`} onClick={submit} disabled={busy || h === "" || a === ""}
               className="ml-auto bg-[#00F0FF] text-black font-bold px-4 py-2 text-sm uppercase tracking-widest hover:bg-white disabled:opacity-50">
-              {myPred ? "Update" : "Save"}
+              {myPred ? "Uppdatera" : "Spara"}
             </button>
             {myPred && <CheckCircle size={20} className="text-[#39FF14]" weight="fill" />}
+          </div>
+        )}
+        {!locked && (
+          <div className="text-[10px] text-zinc-600 mt-2 uppercase tracking-widest">
+            Tippning stänger 5 minuter före avspark
           </div>
         )}
         {err && <div className="text-[#FF3B30] text-xs mt-2">{err}</div>}
@@ -125,17 +138,17 @@ function MatchRow({ match, myPred, onSubmit }) {
         <div className="mt-2">
           <button data-testid={`see-others-${match.id}`} onClick={loadOthers}
             className="text-xs uppercase tracking-widest text-zinc-500 hover:text-white inline-flex items-center gap-1">
-            <EyeSlash size={14} /> See other picks
+            <EyeSlash size={14} /> Se andras tips
           </button>
           {othersOpen && others && (
             <div className="mt-2 border border-white/10 p-3 text-sm">
-              {others.locked ? <div className="text-zinc-500">Hidden until kick-off.</div>
-                : others.predictions.length === 0 ? <div className="text-zinc-500">No predictions submitted.</div>
+              {others.locked ? <div className="text-zinc-500">Andras tips visas när matchen är slut.</div>
+                : others.predictions.length === 0 ? <div className="text-zinc-500">Inga tips inskickade.</div>
                 : (
                   <ul className="divide-y divide-white/5">
                     {others.predictions.map((p) => (
                       <li key={p.id} className="flex justify-between py-1">
-                        <span className="text-zinc-300">{p.user?.name || "Player"}</span>
+                        <span className="text-zinc-300">{p.user?.name || "Spelare"}</span>
                         <span className="font-mono text-[#00F0FF]">{p.home_score} : {p.away_score}</span>
                       </li>
                     ))}
@@ -179,32 +192,35 @@ export default function Matches() {
     return true;
   });
 
+  const filterLabels = { upcoming: "Kommande", finished: "Spelade", all: "Alla" };
+  const stageLabels = { all: "Alla matcher", group: "Gruppspel", knockout: "Slutspel" };
+
   return (
     <div className="space-y-4">
       <div>
-        <div className="label-eyebrow">Live Match Scoring</div>
-        <h1 className="font-display font-black text-3xl tracking-tighter">Matches</h1>
-        <p className="text-zinc-500 text-sm mt-1">Predict 3 (winner) + 2 (goal diff) + 5 (exact) = max 10 pts/match.</p>
+        <div className="label-eyebrow">Livetippning</div>
+        <h1 className="font-display font-black text-3xl tracking-tighter">Matcher</h1>
+        <p className="text-zinc-500 text-sm mt-1">Tippa 3 (vinnare) + 2 (målskillnad) + 5 (exakt) = max 10 p/match. Tippningen stänger 5 minuter före avspark.</p>
       </div>
 
       <div className="flex gap-2 flex-wrap">
-        {["upcoming", "finished", "all"].map((f) => (
+        {Object.keys(filterLabels).map((f) => (
           <button key={f} data-testid={`filter-${f}`} onClick={() => setFilter(f)}
             className={`px-3 py-1.5 text-xs uppercase tracking-widest font-bold border transition-all ${
               filter === f ? "bg-[#00F0FF] text-black border-[#00F0FF]" : "border-white/10 text-zinc-400 hover:text-white"
-            }`}>{f}</button>
+            }`}>{filterLabels[f]}</button>
         ))}
         <span className="mx-2 text-zinc-700">|</span>
-        {[{k:"all",l:"All Stages"},{k:"group",l:"Group"},{k:"knockout",l:"Knockout"}].map((s) => (
-          <button key={s.k} data-testid={`stagefilter-${s.k}`} onClick={() => setStageFilter(s.k)}
+        {Object.keys(stageLabels).map((s) => (
+          <button key={s} data-testid={`stagefilter-${s}`} onClick={() => setStageFilter(s)}
             className={`px-3 py-1.5 text-xs uppercase tracking-widest font-bold border transition-all ${
-              stageFilter === s.k ? "bg-[#39FF14] text-black border-[#39FF14]" : "border-white/10 text-zinc-400 hover:text-white"
-            }`}>{s.l}</button>
+              stageFilter === s ? "bg-[#39FF14] text-black border-[#39FF14]" : "border-white/10 text-zinc-400 hover:text-white"
+            }`}>{stageLabels[s]}</button>
         ))}
       </div>
 
       <div className="space-y-3">
-        {filtered.length === 0 && <div className="surface p-6 text-zinc-500 text-sm text-center">No matches.</div>}
+        {filtered.length === 0 && <div className="surface p-6 text-zinc-500 text-sm text-center">Inga matcher.</div>}
         {filtered.map((m) => <MatchRow key={m.id} match={m} myPred={myPreds[m.id]} onSubmit={onSubmit} />)}
       </div>
     </div>

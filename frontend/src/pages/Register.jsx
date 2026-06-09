@@ -46,19 +46,19 @@ export default function Register() {
             <div className="w-10 h-10 grid place-items-center bg-[#39FF14] text-black">
               <SoccerBall size={24} weight="fill" />
             </div>
-            <div className="label-eyebrow">Invite-Only Registration</div>
+            <div className="label-eyebrow">Endast inbjudna kan registrera sig</div>
           </div>
           <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tighter leading-[0.9]">
-            Join the<br /><span className="text-[#39FF14]">squad.</span>
+            Gå med i<br /><span className="text-[#39FF14]">familjen.</span>
           </h1>
           <p className="text-zinc-400 mt-3 text-sm">
-            Your email must be on the invite list to register.
+            Din e-post måste finnas på inbjudningslistan.
           </p>
         </div>
 
         <form onSubmit={submit} className="space-y-4 surface p-6">
           <div>
-            <label className="label-eyebrow block mb-2">Full name</label>
+            <label className="label-eyebrow block mb-2">Fullständigt namn</label>
             <input
               data-testid="register-name-input"
               required
@@ -69,7 +69,7 @@ export default function Register() {
             />
           </div>
           <div>
-            <label className="label-eyebrow block mb-2">Email</label>
+            <label className="label-eyebrow block mb-2">E-post</label>
             <input
               data-testid="register-email-input"
               type="email"
@@ -77,11 +77,11 @@ export default function Register() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full bg-[#0A0A0A] border border-white/10 px-3 py-2 focus:border-[#00F0FF] outline-none"
-              placeholder="you@example.com"
+              placeholder="du@exempel.se"
             />
           </div>
           <div>
-            <label className="label-eyebrow block mb-2">Password</label>
+            <label className="label-eyebrow block mb-2">Lösenord</label>
             <input
               data-testid="register-password-input"
               type="password"
@@ -90,7 +90,7 @@ export default function Register() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full bg-[#0A0A0A] border border-white/10 px-3 py-2 focus:border-[#00F0FF] outline-none"
-              placeholder="At least 6 characters"
+              placeholder="Minst 6 tecken"
             />
           </div>
           {err && <div data-testid="register-error" className="text-[#FF3B30] text-sm">{err}</div>}
@@ -100,11 +100,11 @@ export default function Register() {
             disabled={loading}
             className="w-full bg-[#39FF14] text-black font-bold uppercase tracking-widest py-3 hover:bg-white transition-all disabled:opacity-50"
           >
-            {loading ? "Creating…" : "Create Account"}
+            {loading ? "Skapar…" : "Skapa konto"}
           </button>
           <div className="text-sm text-zinc-400 text-center pt-2">
-            Already have an account?{" "}
-            <Link to="/login" data-testid="goto-login" className="text-[#00F0FF] hover:underline">Sign in</Link>
+            Har du redan ett konto?{" "}
+            <Link to="/login" data-testid="goto-login" className="text-[#00F0FF] hover:underline">Logga in</Link>
           </div>
         </form>
       </div>

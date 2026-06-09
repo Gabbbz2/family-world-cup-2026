@@ -7,7 +7,7 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
   if (loading) {
     return (
       <div className="min-h-screen grid place-items-center bg-[#0A0A0A] text-zinc-400">
-        <span className="label-eyebrow animate-pulse">Loading…</span>
+        <span className="label-eyebrow animate-pulse">Laddar…</span>
       </div>
     );
   }
