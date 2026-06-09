@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { api, formatError } from "../lib/api";
 import { FlagTeam, Flag } from "../components/FlagTeam";
 import { Crown, Strategy as StrategyIcon, Star, Lightning, ArrowUp, ArrowDown } from "@phosphor-icons/react";
+import { fmtSwedishCompact } from "../lib/dates";
 
 const VERSIONS = [
   { v: 1, label: "Version 1", mult: 1.0, hint: "Most points (100%)", color: "#00F0FF" },
@@ -168,7 +169,7 @@ export default function TournamentPrediction() {
         </p>
         {version === 1 && deadline && (
           <div className={`mt-2 text-xs px-3 py-2 border ${deadlinePassed ? "border-[#FF3B30] text-[#FF3B30]" : "border-[#FFCC00] text-[#FFCC00]"}`}>
-            <span className="font-bold uppercase tracking-widest">V1 Deadline:</span> {new Date(deadline).toLocaleString()} {deadlinePassed && "· PASSED (late flag)"}
+            <span className="font-bold uppercase tracking-widest">V1 Deadline:</span> {fmtSwedishCompact(deadline)} (Europe/Stockholm) {deadlinePassed && "· PASSED (late flag)"}
           </div>
         )}
       </div>

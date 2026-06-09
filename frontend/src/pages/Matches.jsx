@@ -3,11 +3,11 @@ import { api, formatError } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
 import { FlagTeam } from "../components/FlagTeam";
 import { LockKey, CheckCircle, EyeSlash, Clock, Television } from "@phosphor-icons/react";
+import { fmtSwedishDateLong, fmtSwedishTime } from "../lib/dates";
 
 function fmtKickoff(iso) {
   if (!iso) return "";
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return `${fmtSwedishDateLong(iso)} · ${fmtSwedishTime(iso)}`;
 }
 
 function MatchRow({ match, myPred, onSubmit }) {

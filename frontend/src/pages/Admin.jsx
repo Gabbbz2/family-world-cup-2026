@@ -5,6 +5,10 @@ import {
   UserPlus, Trash, ShieldCheck, ShieldChevron, ArrowsClockwise,
   UploadSimple, Warning, CheckCircle, ClipboardText, CalendarBlank, Prohibit, Recycle,
 } from "@phosphor-icons/react";
+import {
+  fmtSwedishShort, fmtSwedishCompact,
+  utcIsoToSwedishLocalInput, swedishLocalInputToUtcIso,
+} from "../lib/dates";
 
 function Section({ title, children, action }) {
   return (
@@ -106,7 +110,7 @@ function ResultsTab() {
                 <span className="label-eyebrow">{m.round || m.stage}</span>
                 {m.group && <span className="label-eyebrow text-[#00F0FF]">G {m.group}</span>}
               </div>
-              <span className="text-[10px] text-zinc-500">{new Date(m.kickoff).toLocaleString()}</span>
+              <span className="text-[10px] text-zinc-500">{fmtSwedishShort(m.kickoff)}</span>
             </div>
             <div className="mt-2 grid grid-cols-7 items-center gap-2">
               <div className="col-span-3"><FlagTeam team={m.home_team} placeholder={m.home_placeholder} size={18} /></div>
@@ -295,21 +299,20 @@ function DeadlineTab() {
     const { data } = await api.get("/config/v1-deadline");
     setCurrent(data.deadline);
     if (data.deadline) {
-      const d = new Date(data.deadline);
-      setDeadline(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
+      setDeadline(utcIsoToSwedishLocalInput(data.deadline));
     }
   };
   useEffect(() => { load(); }, []);
 
   const save = async () => {
-    const iso = new Date(deadline).toISOString();
+    const iso = swedishLocalInputToUtcIso(deadline);
     await api.post("/config/v1-deadline", { deadline: iso });
     setMsg("V1 deadline updated"); load();
   };
 
   return (
     <Section title="Version 1 Submission Deadline">
-      <p className="text-zinc-500 text-xs mb-3">After this timestamp, V1 tournament submissions will be flagged as LATE for everyone.</p>
+      <p className="text-zinc-500 text-xs mb-3">Entered in Swedish local time (Europe/Stockholm). After this timestamp, V1 tournament submissions will be flagged as LATE for everyone.</p>
       <div className="flex gap-2 items-center flex-wrap">
         <input type="datetime-local" data-testid="deadline-input" value={deadline} onChange={(e) => setDeadline(e.target.value)}
           className="bg-[#0A0A0A] border border-white/10 px-3 py-2 text-sm" />
@@ -318,7 +321,7 @@ function DeadlineTab() {
           <CalendarBlank size={14} /> Save Deadline
         </button>
       </div>
-      {current && <div className="mt-3 text-xs text-zinc-400">Current: {new Date(current).toLocaleString()}</div>}
+      {current && <div className="mt-3 text-xs text-zinc-400">Current: {fmtSwedishCompact(current)} (Europe/Stockholm)</div>}
       {msg && <div className="text-[#39FF14] text-sm mt-2">{msg}</div>}
     </Section>
   );
@@ -442,7 +445,7 @@ function AuditTab() {
           <div key={l.id} className="border border-white/10 p-2" data-testid={`audit-${l.id}`}>
             <div className="flex items-center justify-between">
               <span className="text-[#00F0FF] font-mono">{l.action}</span>
-              <span className="text-zinc-500">{new Date(l.timestamp).toLocaleString()}</span>
+              <span className="text-zinc-500">{fmtSwedishCompact(l.timestamp)}</span>
             </div>
             <div className="text-zinc-400">by {l.admin_name || l.admin_email}</div>
             {l.details && Object.keys(l.details).length > 0 && (

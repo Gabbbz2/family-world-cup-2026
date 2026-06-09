@@ -4,10 +4,10 @@ import { api } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
 import { FlagTeam, Flag } from "../components/FlagTeam";
 import { Trophy, Strategy, CalendarBlank, CaretRight, Television } from "@phosphor-icons/react";
+import { fmtSwedishShort } from "../lib/dates";
 
 function fmtKick(iso) {
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return fmtSwedishShort(iso);
 }
 
 export default function Dashboard() {
