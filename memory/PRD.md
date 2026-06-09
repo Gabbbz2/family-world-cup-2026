@@ -1,36 +1,45 @@
 # Family World Cup 2026 — PRD
 
 ## Problem Statement
-Private, mobile-first prediction web app called **Family World Cup 2026**. Family + friends predict FIFA World Cup 2026 matches and the full tournament bracket (Versions 1–4). Not real-money. Built with **FastAPI + MongoDB + React** (Supabase not available on platform — confirmed by user).
+Private, mobile-first FIFA World Cup 2026 prediction web app for family + friends. Stack: **FastAPI + MongoDB + React** (Supabase not available on platform).
 
 ## User Personas
-- **Admin** (Gabriella Bengtsson, `gabriella.bengtsson2@gmail.com`): imports matches, manages teams, manages users, enters results, manages tournament versions, assigns/revokes admin role, invites family.
-- **Player** (invited family/friend): registers via invited email, submits match predictions and tournament (V1–V4) predictions, tracks ranking on the leaderboard.
+- **Admin** (Gabriella Bengtsson, `gabriella.bengtsson2@gmail.com`): manages teams, fixtures, results, users, invites, DQ; sets V1 deadline; reviews audit log.
+- **Player** (invited): registers via invite, submits match + tournament predictions (V1–V4), tracks Live/Strategy/Total points on leaderboard.
 
 ## Core Requirements
-- JWT auth (email + password, bcrypt), invite-only registration, role-based admin gating.
-- 48 FIFA WC 2026 teams pre-seeded with `team_name` + ISO `country_code`, groups A–L, replaceable by admin import.
-- Match scoring: 3 (winner) + 2 (goal diff) + 5 (exact) = max 10 pts/match.
-- Tournament scoring (Strategy pts) with version multipliers V1 100% / V2 75% / V3 50% / V4 25%; late V1 flagged with timestamp.
-- Leaderboard with **Live + Strategy + Total** columns, sortable tabs, current user highlighted.
-- Country flags everywhere via `react-country-flag` SVG.
-- Predictions hidden until match kick-off; locked after.
+- JWT auth + invite-only registration.
+- 48 FIFA WC 2026 teams + 104 matches imported from official xlsx fixture file.
+- Match scoring: 3 winner + 2 goal-diff + 5 exact (max 10/match).
+- Tournament strategy: group winner +5, advancing +3, R32 +4, R16 +6, QF +8, SF +12, finalist +20, champion +30; multipliers V1 100% / V2 75% / V3 50% / V4 25%; late V1 flagged.
+- Group rankings 1st–4th per group (unique selection enforced).
+- Auto-progression: group standings compute, placeholders (1A, 2B, 3ABCDF, W73, RU101) resolve when source matches/groups complete.
+- Admin Results page with edit/clear/recompute/progress controls.
+- Team DQ with required reason + audit log.
+- Excel/CSV import (preview + replace).
+- V1 deadline configuration.
+- Mobile-first FIFA-style dark UI with `react-country-flag` SVG flags everywhere.
 
-## Implemented (2026-02)
-- Backend (server.py): auth (register/login/logout/me/forgot/reset), teams, matches CRUD (admin), match predictions (upsert + lock), tournament predictions (upsert per version, late-flag), leaderboard with live + strategy + total, admin (users, roles, invites, manual strategy points, recompute).
-- Frontend pages: Login, Register, Dashboard, Matches, Leaderboard, Tournament Prediction (V1–V4 with group winners/runners-up + knockout stage pickers + champion), Admin (matches/users/invites/scoring tabs).
-- Mobile-first dark "Performance Pro" theme, Outfit + Manrope fonts, neon cyan/lime accents.
-- Pre-seeded: 1 admin, 48 teams, 24 sample matches.
-- Tested: 18/18 backend pytest, frontend smoke verified.
+## Implemented (2026-02 / iteration 2)
+- All endpoints + auto-imported xlsx (48 teams, 72 group + 32 knockout matches, TV channels).
+- Auto-progression: group standings + placeholder resolution + strategy recompute.
+- Admin Panel with 8 tabs: Results, Teams/DQ, Import, V1 Deadline, Users, Invites, Scoring, Audit Log.
+- Tournament Prediction with full 1st–4th group rankings (unique enforcement) + bracket stages + champion.
+- Dashboard group standings preview + upcoming matches with TV/round badges.
+- Winner highlight (green) / loser dim on finished matches.
+- Audit log for every admin mutating action.
+- 29/29 backend pytest passing.
 
 ## Backlog (P1)
-- Excel/CSV match import on Admin page (admin will upload real fixtures).
-- Automated strategy-points calculation from tournament predictions vs. real results (currently manual override).
-- Password reset email (currently logs token to backend stdout).
-- Lock V1 tournament predictions at a configurable deadline (UI for setting `config.v1_deadline`).
+- DRY-extract progression placeholder logic into helper.
+- Server-side validation that group_rankings team IDs belong to the named group.
+- Pagination/virtualization on the 104-row admin Results list.
+- Password reset email delivery (token currently logs to backend stdout).
+- `import-commit` should return 422 on parse errors instead of 200 + `ok:false`.
 
 ## Backlog (P2)
 - Live polling / websockets for in-progress matches.
-- Public share link for family chat group.
+- Public WhatsApp/Telegram share link.
 - Per-user prediction history page.
-- Bracket connector lines visualization.
+- Bracket connector-lines visual.
+- Split server.py into multiple routers/services modules.
