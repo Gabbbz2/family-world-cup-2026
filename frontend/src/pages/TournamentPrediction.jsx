@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api, formatError } from "../lib/api";
 import { FlagTeam, Flag } from "../components/FlagTeam";
-import { Crown, Strategy as StrategyIcon, Star, Lightning } from "@phosphor-icons/react";
+import { Crown, Strategy as StrategyIcon, Star, Lightning, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 
 const VERSIONS = [
   { v: 1, label: "Version 1", mult: 1.0, hint: "Most points (100%)", color: "#00F0FF" },
@@ -10,45 +10,88 @@ const VERSIONS = [
   { v: 4, label: "Version 4", mult: 0.25, hint: "25% multiplier", color: "#FF3B30" },
 ];
 
-function TeamPick({ team, selected, onClick, testid }) {
+function GroupRankingBox({ group, teams, ranking, onChange }) {
+  // ranking is an array of 4 team_ids; ranking[i] === team_id at position i+1
+  const pickedSet = new Set(ranking.filter(Boolean));
+  const setPosition = (pos, teamId) => {
+    const next = [...ranking];
+    // Remove this teamId from any other position first
+    for (let i = 0; i < 4; i++) if (next[i] === teamId) next[i] = "";
+    next[pos] = teamId;
+    onChange(next);
+  };
+  const positionLabels = ["1st", "2nd", "3rd", "4th"];
+  const positionColors = ["#FFCC00", "#A1A1AA", "#FF8A3D", "#FF3B30"];
   return (
-    <button
-      data-testid={testid}
-      onClick={onClick}
-      className={`w-full flex items-center gap-2 px-2 py-2 border transition-all text-left ${
-        selected
-          ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
-          : "border-white/10 text-zinc-300 hover:border-white/30"
-      }`}
-    >
-      <Flag code={team.country_code} size={20} />
-      <span className="text-sm font-semibold truncate">{team.team_name}</span>
-    </button>
+    <div className="surface p-3" data-testid={`group-${group}`}>
+      <div className="label-eyebrow mb-3">Group {group}</div>
+      <div className="space-y-2">
+        {positionLabels.map((label, idx) => {
+          const currentId = ranking[idx] || "";
+          return (
+            <div key={idx} className="flex items-center gap-2">
+              <div className="w-8 text-center font-display font-black text-sm" style={{ color: positionColors[idx] }}>
+                {label}
+              </div>
+              <select
+                data-testid={`rank-${group}-${idx + 1}`}
+                value={currentId}
+                onChange={(e) => setPosition(idx, e.target.value)}
+                className="flex-1 bg-[#0A0A0A] border border-white/10 px-2 py-2 text-sm text-white focus:border-[#00F0FF] outline-none"
+              >
+                <option value="">— Select team —</option>
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id} disabled={pickedSet.has(t.id) && t.id !== currentId}>
+                    {t.team_name}
+                  </option>
+                ))}
+              </select>
+              {currentId && (() => {
+                const t = teams.find((x) => x.id === currentId);
+                return t ? <Flag code={t.country_code} size={20} /> : null;
+              })()}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
-function TeamSelect({ teams, value, onChange, placeholder, testid }) {
+function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit = null }) {
   return (
-    <select
-      data-testid={testid}
-      value={value || ""}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-full bg-[#0A0A0A] border border-white/10 px-2 py-2 text-sm text-white focus:border-[#00F0FF] outline-none"
-    >
-      <option value="">{placeholder}</option>
-      {teams.map((t) => (
-        <option key={t.id} value={t.id}>{t.team_name}</option>
-      ))}
-    </select>
+    <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+      {teams.map((t) => {
+        const isSel = selected.includes(t.id);
+        const disabled = !isSel && limit && selected.length >= limit;
+        return (
+          <button
+            key={t.id}
+            data-testid={`${testidPrefix}-${t.id}`}
+            onClick={() => onToggle(t.id)}
+            disabled={disabled}
+            className={`w-full flex items-center gap-2 px-2 py-2 border transition-all text-left ${
+              isSel
+                ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
+                : disabled ? "border-white/5 text-zinc-700 cursor-not-allowed"
+                : "border-white/10 text-zinc-300 hover:border-white/30"
+            }`}
+          >
+            <Flag code={t.country_code} size={20} />
+            <span className="text-sm font-semibold truncate">{t.team_name}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
 export default function TournamentPrediction() {
   const [groups, setGroups] = useState({});
   const [version, setVersion] = useState(1);
+  const [deadline, setDeadline] = useState(null);
   const [pred, setPred] = useState({
-    group_winners: {}, group_runners_up: {},
-    r32: [], r16: [], qf: [], sf: [], finalists: [], champion: "",
+    group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], finalists: [], champion: "",
   });
   const [existing, setExisting] = useState({});
   const [saved, setSaved] = useState("");
@@ -63,32 +106,36 @@ export default function TournamentPrediction() {
 
   useEffect(() => {
     (async () => {
-      const [g, mine] = await Promise.all([
+      const [g, mine, dl] = await Promise.all([
         api.get("/teams/groups"),
         api.get("/tournament-predictions/me"),
+        api.get("/config/v1-deadline").catch(() => ({ data: {} })),
       ]);
       setGroups(g.data);
       const map = {};
       mine.data.forEach((p) => (map[p.version] = p));
       setExisting(map);
+      setDeadline(dl.data?.deadline || null);
     })();
   }, []);
 
-  // Load existing into form when version changes
   useEffect(() => {
     const e = existing[version];
     if (e) {
       setPred({
-        group_winners: e.group_winners || {},
-        group_runners_up: e.group_runners_up || {},
+        group_rankings: e.group_rankings || {},
+        advancing: e.advancing || [],
         r32: e.r32 || [], r16: e.r16 || [], qf: e.qf || [],
         sf: e.sf || [], finalists: e.finalists || [], champion: e.champion || "",
       });
     } else {
-      setPred({ group_winners: {}, group_runners_up: {}, r32: [], r16: [], qf: [], sf: [], finalists: [], champion: "" });
+      setPred({ group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], finalists: [], champion: "" });
     }
   }, [version, existing]);
 
+  const setGroupRanking = (g, arr) => {
+    setPred((p) => ({ ...p, group_rankings: { ...p.group_rankings, [g]: arr } }));
+  };
   const toggleList = (key, teamId) => {
     setPred((p) => {
       const arr = p[key].includes(teamId) ? p[key].filter((x) => x !== teamId) : [...p[key], teamId];
@@ -99,29 +146,31 @@ export default function TournamentPrediction() {
   const submit = async () => {
     setErr(""); setSaved("");
     try {
-      const { data } = await api.post("/tournament-predictions", { version, ...pred });
+      const payload = { version, ...pred };
+      const { data } = await api.post("/tournament-predictions", payload);
       setExisting((prev) => ({ ...prev, [version]: data }));
-      setSaved(`Version ${version} saved` + (data.is_late ? " (LATE — flagged)" : ""));
+      setSaved(`Version ${version} saved` + (data.is_late ? " · LATE (after deadline)" : ""));
     } catch (e) {
       setErr(formatError(e));
     }
   };
 
-  const advancingPool = useMemo(() => {
-    // 24 teams: 12 group winners + 12 runners-up + 8 best thirds (we let user pick from all teams for r32)
-    return allTeams;
-  }, [allTeams]);
-
   const currentMult = VERSIONS.find((v) => v.v === version)?.mult || 1;
+  const deadlinePassed = deadline && new Date(deadline) < new Date();
 
   return (
     <div className="space-y-6">
       <div>
-        <div className="label-eyebrow">Strategy / Tournament Picks</div>
+        <div className="label-eyebrow">Strategy · Tournament Picks</div>
         <h1 className="font-display font-black text-3xl tracking-tighter">Tournament Prediction</h1>
         <p className="text-zinc-500 text-sm mt-1">
-          Earn strategy points: Group winner +5 · Advancing +3 · R32 +4 · R16 +6 · QF +8 · SF +12 · Final +20 · Champion +30.
+          Strategy pts: Group winner +5 · Advancing +3 · R32 +4 · R16 +6 · QF +8 · SF +12 · Final +20 · Champion +30.
         </p>
+        {version === 1 && deadline && (
+          <div className={`mt-2 text-xs px-3 py-2 border ${deadlinePassed ? "border-[#FF3B30] text-[#FF3B30]" : "border-[#FFCC00] text-[#FFCC00]"}`}>
+            <span className="font-bold uppercase tracking-widest">V1 Deadline:</span> {new Date(deadline).toLocaleString()} {deadlinePassed && "· PASSED (late flag)"}
+          </div>
+        )}
       </div>
 
       {/* Version selector */}
@@ -149,46 +198,21 @@ export default function TournamentPrediction() {
         Current multiplier: <span className="text-white font-bold">{Math.round(currentMult * 100)}%</span>
       </div>
 
-      {/* Group stage picks */}
+      {/* Group rankings 1st-4th */}
       <section>
         <h2 className="font-display font-bold text-xl mb-3 flex items-center gap-2">
-          <StrategyIcon size={20} weight="fill" className="text-[#00F0FF]" /> Group Stage
+          <StrategyIcon size={20} weight="fill" className="text-[#00F0FF]" /> Group Stage — Rank 1st to 4th
         </h2>
+        <p className="text-zinc-500 text-xs mb-3">Each team may only be selected once per group.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {Object.keys(groups).sort().map((g) => (
-            <div key={g} className="surface p-3" data-testid={`group-${g}`}>
-              <div className="label-eyebrow mb-2">Group {g}</div>
-              <div className="space-y-2 mb-3">
-                {groups[g].map((t) => (
-                  <div key={t.id} className="flex items-center gap-2 text-sm">
-                    <Flag code={t.country_code} size={18} />
-                    <span className="truncate flex-1">{t.team_name}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="space-y-2">
-                <div>
-                  <div className="text-[10px] uppercase tracking-widest text-[#FFCC00] mb-1">Winner</div>
-                  <TeamSelect
-                    testid={`winner-${g}`}
-                    teams={groups[g]}
-                    value={pred.group_winners[g]}
-                    onChange={(id) => setPred((p) => ({ ...p, group_winners: { ...p.group_winners, [g]: id } }))}
-                    placeholder="Pick winner"
-                  />
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-widest text-zinc-400 mb-1">Runner-up</div>
-                  <TeamSelect
-                    testid={`runnerup-${g}`}
-                    teams={groups[g]}
-                    value={pred.group_runners_up[g]}
-                    onChange={(id) => setPred((p) => ({ ...p, group_runners_up: { ...p.group_runners_up, [g]: id } }))}
-                    placeholder="Pick runner-up"
-                  />
-                </div>
-              </div>
-            </div>
+            <GroupRankingBox
+              key={g}
+              group={g}
+              teams={groups[g]}
+              ranking={pred.group_rankings[g] || ["", "", "", ""]}
+              onChange={(arr) => setGroupRanking(g, arr)}
+            />
           ))}
         </div>
       </section>
@@ -196,27 +220,32 @@ export default function TournamentPrediction() {
       {/* Bracket stages */}
       <section>
         <h2 className="font-display font-bold text-xl mb-3">Knockout Bracket</h2>
+        <p className="text-zinc-500 text-xs mb-3">Pick teams advancing through each round. Tap to toggle.</p>
         <div className="overflow-x-auto no-scrollbar">
           <div className="grid grid-cols-6 gap-3 min-w-[900px]">
             {[
-              { key: "r32", label: "Round of 32", color: "#A1A1AA" },
-              { key: "r16", label: "Round of 16", color: "#00F0FF" },
-              { key: "qf", label: "Quarter-finals", color: "#39FF14" },
-              { key: "sf", label: "Semi-finals", color: "#FFCC00" },
-              { key: "finalists", label: "Finalists", color: "#FF3B30" },
+              { key: "advancing", label: "Advancing (Group→KO)", color: "#A1A1AA", limit: 32 },
+              { key: "r16", label: "Round of 16", color: "#00F0FF", limit: 16 },
+              { key: "qf", label: "Quarter-finals", color: "#39FF14", limit: 8 },
+              { key: "sf", label: "Semi-finals", color: "#FFCC00", limit: 4 },
+              { key: "finalists", label: "Finalists", color: "#FF3B30", limit: 2 },
               { key: "champion", label: "Champion", color: "#FFFFFF" },
             ].map((stage) => (
               <div key={stage.key} className="surface p-3" data-testid={`stage-${stage.key}`}>
                 <div className="label-eyebrow mb-2" style={{ color: stage.color }}>{stage.label}</div>
                 {stage.key === "champion" ? (
                   <div>
-                    <TeamSelect
-                      testid="champion-pick"
-                      teams={allTeams}
-                      value={pred.champion}
-                      onChange={(id) => setPred((p) => ({ ...p, champion: id }))}
-                      placeholder="Pick champion"
-                    />
+                    <select
+                      data-testid="champion-pick"
+                      value={pred.champion || ""}
+                      onChange={(e) => setPred((p) => ({ ...p, champion: e.target.value }))}
+                      className="w-full bg-[#0A0A0A] border border-white/10 px-2 py-2 text-sm text-white focus:border-[#00F0FF] outline-none"
+                    >
+                      <option value="">Pick champion</option>
+                      {allTeams.map((t) => (
+                        <option key={t.id} value={t.id}>{t.team_name}</option>
+                      ))}
+                    </select>
                     {pred.champion && tmap[pred.champion] && (
                       <div className="mt-3 p-3 border border-[#00F0FF] bg-[#00F0FF]/10 flex items-center gap-2">
                         <Crown size={20} weight="fill" className="text-[#FFCC00]" />
@@ -225,20 +254,16 @@ export default function TournamentPrediction() {
                     )}
                   </div>
                 ) : (
-                  <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                    {advancingPool.map((t) => (
-                      <TeamPick
-                        key={t.id}
-                        testid={`${stage.key}-${t.id}`}
-                        team={t}
-                        selected={pred[stage.key].includes(t.id)}
-                        onClick={() => toggleList(stage.key, t.id)}
-                      />
-                    ))}
-                  </div>
+                  <TeamMultiPick
+                    teams={allTeams}
+                    selected={pred[stage.key]}
+                    onToggle={(id) => toggleList(stage.key, id)}
+                    testidPrefix={stage.key}
+                    limit={stage.limit}
+                  />
                 )}
                 <div className="mt-2 text-[10px] text-zinc-500">
-                  Picked: {stage.key === "champion" ? (pred.champion ? 1 : 0) : pred[stage.key].length}
+                  Picked: {stage.key === "champion" ? (pred.champion ? 1 : 0) : pred[stage.key].length}{stage.limit ? ` / ${stage.limit}` : ""}
                 </div>
               </div>
             ))}

@@ -4,24 +4,29 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import io
+import re
 import uuid
 import secrets
 import logging
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict, Any
+from collections import defaultdict
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, status
+import openpyxl
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Form
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field
 
-# ---------- Config ----------
+# ============== Config ==============
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "gabriella.bengtsson2@gmail.com").lower()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "WorldCup2026!")
+DATA_DIR = ROOT_DIR / "data"
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -30,7 +35,10 @@ db = client[os.environ["DB_NAME"]]
 app = FastAPI(title="Family World Cup 2026")
 api = APIRouter(prefix="/api")
 
-# ---------- Helpers ----------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ============== Helpers ==============
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -44,9 +52,11 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 def create_access_token(user_id: str, email: str) -> str:
-    payload = {"sub": user_id, "email": email,
-               "exp": now_utc() + timedelta(days=7), "type": "access"}
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(
+        {"sub": user_id, "email": email,
+         "exp": now_utc() + timedelta(days=7), "type": "access"},
+        JWT_SECRET, algorithm=JWT_ALGORITHM,
+    )
 
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
@@ -55,32 +65,43 @@ async def get_current_user(request: Request) -> dict:
         if auth.startswith("Bearer "):
             token = auth[7:]
     if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(401, "Not authenticated")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
-            raise HTTPException(status_code=401, detail="Invalid token type")
+            raise HTTPException(401, "Invalid token type")
         user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
         if not user:
-            raise HTTPException(status_code=401, detail="User not found")
+            raise HTTPException(401, "User not found")
         return user
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
+        raise HTTPException(401, "Token expired")
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(401, "Invalid token")
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
     if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(403, "Admin access required")
     return user
 
 def set_auth_cookie(response: Response, token: str):
     response.set_cookie(
-        key="access_token", value=token, httponly=True, secure=True,
+        "access_token", token, httponly=True, secure=True,
         samesite="none", max_age=7 * 24 * 60 * 60, path="/",
     )
 
-# ---------- Models ----------
+async def log_audit(admin: dict, action: str, details: dict = None):
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "admin_id": admin["id"],
+        "admin_name": admin.get("name"),
+        "admin_email": admin.get("email"),
+        "action": action,
+        "details": details or {},
+        "timestamp": now_utc().isoformat(),
+    })
+
+# ============== Models ==============
 class RegisterReq(BaseModel):
     name: str
     email: EmailStr
@@ -97,43 +118,31 @@ class ResetPwReq(BaseModel):
     token: str
     password: str = Field(min_length=6)
 
-class TeamModel(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    team_name: str
-    country_code: str  # ISO 3166-1 alpha-2 e.g. SE, BR, AR
-    group: str  # "A" - "L"
-
-class MatchModel(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    stage: str = "group"  # group, r32, r16, qf, sf, final
-    group: Optional[str] = None
-    home_team_id: str
-    away_team_id: str
-    kickoff: datetime
-    home_score: Optional[int] = None
-    away_score: Optional[int] = None
-    status: Literal["upcoming", "live", "finished"] = "upcoming"
-
 class MatchCreate(BaseModel):
     stage: str = "group"
+    round: Optional[str] = None
     group: Optional[str] = None
-    home_team_id: str
-    away_team_id: str
+    home_team_id: Optional[str] = None
+    away_team_id: Optional[str] = None
+    home_placeholder: Optional[str] = None
+    away_placeholder: Optional[str] = None
     kickoff: datetime
+    tv_channel: Optional[str] = None
+    match_number: Optional[int] = None
 
 class MatchResultReq(BaseModel):
-    home_score: int
-    away_score: int
+    home_score: int = Field(ge=0)
+    away_score: int = Field(ge=0)
 
 class PredictionReq(BaseModel):
     match_id: str
-    home_score: int
-    away_score: int
+    home_score: int = Field(ge=0)
+    away_score: int = Field(ge=0)
 
 class TournamentPredictionReq(BaseModel):
     version: int = Field(ge=1, le=4)
-    group_winners: dict  # {"A": team_id, ...}
-    group_runners_up: dict  # {"A": team_id, ...}
+    group_rankings: Dict[str, List[str]] = {}  # {"A": [1st_id, 2nd_id, 3rd_id, 4th_id]}
+    advancing: List[str] = []
     r32: List[str] = []
     r16: List[str] = []
     qf: List[str] = []
@@ -141,17 +150,29 @@ class TournamentPredictionReq(BaseModel):
     finalists: List[str] = []
     champion: Optional[str] = None
 
-# ---------- Auth Endpoints ----------
+class DisqualifyReq(BaseModel):
+    team_id: str
+    reason: str
+
+class InviteReq(BaseModel):
+    email: EmailStr
+
+class StrategyReq(BaseModel):
+    user_id: str
+    points: int
+
+class V1DeadlineReq(BaseModel):
+    deadline: datetime
+
+# ============== Auth ==============
 @api.post("/auth/register")
 async def register(req: RegisterReq, response: Response):
     email = req.email.lower()
-    existing = await db.users.find_one({"email": email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    # Invite-only: allow registration only if email is in invites OR is the admin email
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(400, "Email already registered")
     invite = await db.invites.find_one({"email": email})
     if email != ADMIN_EMAIL and not invite:
-        raise HTTPException(status_code=403, detail="This is a private app. Your email is not invited.")
+        raise HTTPException(403, "This is a private app. Your email is not invited.")
     role = "admin" if email == ADMIN_EMAIL else "user"
     user = {
         "id": str(uuid.uuid4()),
@@ -160,6 +181,7 @@ async def register(req: RegisterReq, response: Response):
         "password_hash": hash_password(req.password),
         "role": role,
         "created_at": now_utc().isoformat(),
+        "live_points": 0, "strategy_points": 0,
     }
     await db.users.insert_one(user)
     if invite:
@@ -175,7 +197,7 @@ async def login(req: LoginReq, response: Response):
     email = req.email.lower()
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(req.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(401, "Invalid email or password")
     token = create_access_token(user["id"], user["email"])
     set_auth_cookie(response, token)
     user.pop("password_hash", None)
@@ -196,31 +218,27 @@ async def forgot_password(req: ForgotPwReq):
     email = req.email.lower()
     user = await db.users.find_one({"email": email})
     if not user:
-        return {"ok": True}  # Don't reveal
+        return {"ok": True}
     token = secrets.token_urlsafe(32)
     await db.password_reset_tokens.insert_one({
         "token": token, "user_id": user["id"],
-        "expires_at": (now_utc() + timedelta(hours=1)).isoformat(),
-        "used": False,
+        "expires_at": (now_utc() + timedelta(hours=1)).isoformat(), "used": False,
     })
-    print(f"[PASSWORD RESET] {email} -> token: {token}")
-    return {"ok": True, "reset_token": token}  # Returned for dev convenience
+    print(f"[PASSWORD RESET] {email} -> {token}")
+    return {"ok": True, "reset_token": token}
 
 @api.post("/auth/reset-password")
 async def reset_password(req: ResetPwReq):
     doc = await db.password_reset_tokens.find_one({"token": req.token, "used": False})
     if not doc:
-        raise HTTPException(status_code=400, detail="Invalid or used token")
+        raise HTTPException(400, "Invalid or used token")
     if datetime.fromisoformat(doc["expires_at"]) < now_utc():
-        raise HTTPException(status_code=400, detail="Token expired")
-    await db.users.update_one(
-        {"id": doc["user_id"]},
-        {"$set": {"password_hash": hash_password(req.password)}},
-    )
+        raise HTTPException(400, "Token expired")
+    await db.users.update_one({"id": doc["user_id"]}, {"$set": {"password_hash": hash_password(req.password)}})
     await db.password_reset_tokens.update_one({"token": req.token}, {"$set": {"used": True}})
     return {"ok": True}
 
-# ---------- Teams ----------
+# ============== Teams ==============
 @api.get("/teams")
 async def list_teams():
     teams = await db.teams.find({}, {"_id": 0}).to_list(200)
@@ -229,46 +247,80 @@ async def list_teams():
 @api.get("/teams/groups")
 async def teams_by_group():
     teams = await db.teams.find({}, {"_id": 0}).to_list(200)
-    groups = {}
+    groups: Dict[str, list] = {}
     for t in teams:
         groups.setdefault(t["group"], []).append(t)
     for g in groups:
         groups[g].sort(key=lambda x: x["team_name"])
     return groups
 
-# ---------- Matches ----------
-@api.get("/matches")
-async def list_matches():
-    matches = await db.matches.find({}, {"_id": 0}).to_list(1000)
-    # Attach team objects
-    team_ids = list({m["home_team_id"] for m in matches} | {m["away_team_id"] for m in matches})
-    teams = await db.teams.find({"id": {"$in": team_ids}}, {"_id": 0}).to_list(200)
+# ============== Matches ==============
+async def _attach_teams_to_matches(matches: list) -> list:
+    ids = list({m["home_team_id"] for m in matches if m.get("home_team_id")} |
+               {m["away_team_id"] for m in matches if m.get("away_team_id")})
+    teams = await db.teams.find({"id": {"$in": ids}}, {"_id": 0}).to_list(200)
     tmap = {t["id"]: t for t in teams}
     for m in matches:
-        m["home_team"] = tmap.get(m["home_team_id"])
-        m["away_team"] = tmap.get(m["away_team_id"])
-        if isinstance(m.get("kickoff"), str):
-            pass
-    matches.sort(key=lambda m: m["kickoff"])
+        m["home_team"] = tmap.get(m.get("home_team_id"))
+        m["away_team"] = tmap.get(m.get("away_team_id"))
+    return matches
+
+@api.get("/matches")
+async def list_matches():
+    matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
+    matches = await _attach_teams_to_matches(matches)
+    matches.sort(key=lambda m: (m.get("kickoff") or "", m.get("match_number") or 0))
     return matches
 
 @api.post("/matches", dependencies=[Depends(require_admin)])
-async def create_match(req: MatchCreate):
-    m = MatchModel(**req.model_dump()).model_dump()
-    m["kickoff"] = m["kickoff"].isoformat() if isinstance(m["kickoff"], datetime) else m["kickoff"]
+async def create_match(req: MatchCreate, admin: dict = Depends(require_admin)):
+    m = {
+        "id": str(uuid.uuid4()),
+        "stage": req.stage,
+        "round": req.round,
+        "group": req.group,
+        "home_team_id": req.home_team_id,
+        "away_team_id": req.away_team_id,
+        "home_placeholder": req.home_placeholder,
+        "away_placeholder": req.away_placeholder,
+        "kickoff": req.kickoff.isoformat() if isinstance(req.kickoff, datetime) else req.kickoff,
+        "tv_channel": req.tv_channel,
+        "match_number": req.match_number,
+        "home_score": None, "away_score": None,
+        "status": "upcoming",
+    }
     await db.matches.insert_one(m)
+    await log_audit(admin, "match_create", {"match_number": req.match_number})
     m.pop("_id", None)
     return m
 
-@api.put("/matches/{match_id}/result", dependencies=[Depends(require_admin)])
-async def set_result(match_id: str, req: MatchResultReq):
-    res = await db.matches.update_one(
+@api.put("/matches/{match_id}/result")
+async def set_result(match_id: str, req: MatchResultReq, admin: dict = Depends(require_admin)):
+    m = await db.matches.find_one({"id": match_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(404, "Match not found")
+    prev = {"home_score": m.get("home_score"), "away_score": m.get("away_score")}
+    await db.matches.update_one(
         {"id": match_id},
         {"$set": {"home_score": req.home_score, "away_score": req.away_score, "status": "finished"}},
     )
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Match not found")
+    await log_audit(admin, "match_result_set", {
+        "match_id": match_id, "match_number": m.get("match_number"),
+        "previous": prev, "new": {"home_score": req.home_score, "away_score": req.away_score},
+    })
     await recompute_live_points()
+    await progress_tournament()
+    return {"ok": True}
+
+@api.delete("/matches/{match_id}/result")
+async def clear_result(match_id: str, admin: dict = Depends(require_admin)):
+    m = await db.matches.find_one({"id": match_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(404, "Match not found")
+    await db.matches.update_one({"id": match_id}, {"$set": {"home_score": None, "away_score": None, "status": "upcoming"}})
+    await log_audit(admin, "match_result_cleared", {"match_id": match_id, "match_number": m.get("match_number")})
+    await recompute_live_points()
+    await progress_tournament()
     return {"ok": True}
 
 @api.delete("/matches/{match_id}", dependencies=[Depends(require_admin)])
@@ -277,23 +329,22 @@ async def delete_match(match_id: str):
     await db.match_predictions.delete_many({"match_id": match_id})
     return {"ok": True}
 
-# ---------- Match Predictions ----------
+# ============== Predictions ==============
 @api.post("/predictions")
 async def submit_prediction(req: PredictionReq, user: dict = Depends(get_current_user)):
     match = await db.matches.find_one({"id": req.match_id}, {"_id": 0})
     if not match:
-        raise HTTPException(status_code=404, detail="Match not found")
+        raise HTTPException(404, "Match not found")
+    if not match.get("home_team_id") or not match.get("away_team_id"):
+        raise HTTPException(400, "Teams not yet determined")
     kickoff = datetime.fromisoformat(match["kickoff"]) if isinstance(match["kickoff"], str) else match["kickoff"]
     if kickoff.tzinfo is None:
         kickoff = kickoff.replace(tzinfo=timezone.utc)
     if now_utc() >= kickoff:
-        raise HTTPException(status_code=400, detail="Predictions are locked for this match")
+        raise HTTPException(400, "Predictions are locked for this match")
     doc = {
-        "id": str(uuid.uuid4()),
-        "user_id": user["id"],
-        "match_id": req.match_id,
-        "home_score": req.home_score,
-        "away_score": req.away_score,
+        "id": str(uuid.uuid4()), "user_id": user["id"], "match_id": req.match_id,
+        "home_score": req.home_score, "away_score": req.away_score,
         "submitted_at": now_utc().isoformat(),
     }
     await db.match_predictions.update_one(
@@ -304,18 +355,16 @@ async def submit_prediction(req: PredictionReq, user: dict = Depends(get_current
 
 @api.get("/predictions/me")
 async def my_predictions(user: dict = Depends(get_current_user)):
-    preds = await db.match_predictions.find({"user_id": user["id"]}, {"_id": 0}).to_list(1000)
-    return preds
+    return await db.match_predictions.find({"user_id": user["id"]}, {"_id": 0}).to_list(2000)
 
 @api.get("/predictions/match/{match_id}")
 async def match_predictions_visible(match_id: str, user: dict = Depends(get_current_user)):
     match = await db.matches.find_one({"id": match_id}, {"_id": 0})
     if not match:
-        raise HTTPException(status_code=404, detail="Match not found")
+        raise HTTPException(404, "Match not found")
     kickoff = datetime.fromisoformat(match["kickoff"]) if isinstance(match["kickoff"], str) else match["kickoff"]
     if kickoff.tzinfo is None:
         kickoff = kickoff.replace(tzinfo=timezone.utc)
-    # Hide predictions until kickoff
     if now_utc() < kickoff and user.get("role") != "admin":
         return {"locked": True, "predictions": []}
     preds = await db.match_predictions.find({"match_id": match_id}, {"_id": 0}).to_list(500)
@@ -325,24 +374,20 @@ async def match_predictions_visible(match_id: str, user: dict = Depends(get_curr
         p["user"] = umap.get(p["user_id"], {})
     return {"locked": False, "predictions": preds}
 
-# ---------- Tournament Predictions ----------
+# ============== Tournament Predictions ==============
 @api.post("/tournament-predictions")
 async def submit_tp(req: TournamentPredictionReq, user: dict = Depends(get_current_user)):
+    # Validate unique selection per group ranking
+    for g, ids in req.group_rankings.items():
+        if len(ids) != len(set([x for x in ids if x])):
+            raise HTTPException(400, f"Duplicate team in group {g} ranking")
     doc = {
-        "id": str(uuid.uuid4()),
-        "user_id": user["id"],
-        "version": req.version,
-        "group_winners": req.group_winners,
-        "group_runners_up": req.group_runners_up,
-        "r32": req.r32,
-        "r16": req.r16,
-        "qf": req.qf,
-        "sf": req.sf,
-        "finalists": req.finalists,
-        "champion": req.champion,
+        "id": str(uuid.uuid4()), "user_id": user["id"], "version": req.version,
+        "group_rankings": req.group_rankings,
+        "advancing": req.advancing, "r32": req.r32, "r16": req.r16, "qf": req.qf,
+        "sf": req.sf, "finalists": req.finalists, "champion": req.champion,
         "submitted_at": now_utc().isoformat(),
     }
-    # Mark late v1 if deadline passed
     cfg = await db.config.find_one({"key": "v1_deadline"}) or {}
     is_late = False
     if req.version == 1 and cfg.get("value"):
@@ -359,49 +404,332 @@ async def submit_tp(req: TournamentPredictionReq, user: dict = Depends(get_curre
 
 @api.get("/tournament-predictions/me")
 async def my_tp(user: dict = Depends(get_current_user)):
-    docs = await db.tournament_predictions.find({"user_id": user["id"]}, {"_id": 0}).to_list(10)
-    return docs
+    return await db.tournament_predictions.find({"user_id": user["id"]}, {"_id": 0}).to_list(10)
 
 @api.get("/tournament-predictions/all", dependencies=[Depends(require_admin)])
 async def all_tp():
-    docs = await db.tournament_predictions.find({}, {"_id": 0}).to_list(1000)
-    return docs
+    return await db.tournament_predictions.find({}, {"_id": 0}).to_list(2000)
 
-# ---------- Leaderboard ----------
+# ============== Config (deadlines) ==============
+@api.get("/config/v1-deadline")
+async def get_v1_deadline():
+    cfg = await db.config.find_one({"key": "v1_deadline"}, {"_id": 0}) or {}
+    return {"deadline": cfg.get("value")}
+
+@api.post("/config/v1-deadline", dependencies=[Depends(require_admin)])
+async def set_v1_deadline(req: V1DeadlineReq, admin: dict = Depends(require_admin)):
+    dl = req.deadline.isoformat() if isinstance(req.deadline, datetime) else req.deadline
+    await db.config.update_one({"key": "v1_deadline"}, {"$set": {"key": "v1_deadline", "value": dl}}, upsert=True)
+    await log_audit(admin, "v1_deadline_set", {"deadline": dl})
+    return {"ok": True}
+
+# ============== Scoring ==============
 def score_match(pred_h, pred_a, actual_h, actual_a) -> int:
     if actual_h is None or actual_a is None:
         return 0
     pts = 0
-    pred_winner = (pred_h > pred_a) - (pred_h < pred_a)
-    actual_winner = (actual_h > actual_a) - (actual_h < actual_a)
-    if pred_winner == actual_winner:
+    pw = (pred_h > pred_a) - (pred_h < pred_a)
+    aw = (actual_h > actual_a) - (actual_h < actual_a)
+    if pw == aw:
         pts += 3
     if (pred_h - pred_a) == (actual_h - actual_a):
         pts += 2
     if pred_h == actual_h and pred_a == actual_a:
         pts += 5
-    return pts  # max 10
+    return pts
 
 async def recompute_live_points():
-    matches = await db.matches.find({"status": "finished"}, {"_id": 0}).to_list(1000)
+    matches = await db.matches.find({"status": "finished"}, {"_id": 0}).to_list(2000)
     mmap = {m["id"]: m for m in matches}
-    preds = await db.match_predictions.find({}, {"_id": 0}).to_list(10000)
-    user_points = {}
+    preds = await db.match_predictions.find({}, {"_id": 0}).to_list(20000)
+    user_points: Dict[str, int] = {}
     for p in preds:
         m = mmap.get(p["match_id"])
         if not m:
             continue
         pts = score_match(p["home_score"], p["away_score"], m.get("home_score"), m.get("away_score"))
         user_points[p["user_id"]] = user_points.get(p["user_id"], 0) + pts
-    # Persist
-    for uid, pts in user_points.items():
-        await db.users.update_one({"id": uid}, {"$set": {"live_points": pts}})
-    # Reset for users with no predictions
-    all_users = await db.users.find({}, {"_id": 0}).to_list(1000)
+    all_users = await db.users.find({}, {"_id": 0, "id": 1}).to_list(2000)
     for u in all_users:
-        if u["id"] not in user_points:
-            await db.users.update_one({"id": u["id"]}, {"$set": {"live_points": 0}})
+        await db.users.update_one({"id": u["id"]}, {"$set": {"live_points": user_points.get(u["id"], 0)}})
 
+# Strategy scoring constants
+STRATEGY_POINTS = {
+    "group_winner": 5, "advancing": 3, "r32": 4, "r16": 6,
+    "qf": 8, "sf": 12, "finalist": 20, "champion": 30,
+}
+VERSION_MULT = {1: 1.0, 2: 0.75, 3: 0.5, 4: 0.25}
+
+async def recompute_strategy_points():
+    """Compute strategy points for each user based on tournament predictions vs actual results so far."""
+    # Determine actual outcomes from match data + standings
+    standings = await compute_all_standings()
+    # actual_group_winners[g] = team_id of 1st
+    actual_group_winners: Dict[str, str] = {}
+    actual_advancing: set = set()
+    for g, rows in standings.items():
+        if rows:
+            actual_group_winners[g] = rows[0]["team_id"]
+            # advancing = top 2 of each group + best 8 thirds (we mark top 2 as advancing here)
+            for r in rows[:2]:
+                actual_advancing.add(r["team_id"])
+    # Best thirds
+    thirds = [(g, rows[2]) for g, rows in standings.items() if len(rows) >= 3]
+    thirds.sort(key=lambda x: (-x[1]["points"], -x[1]["goal_diff"], -x[1]["goals_for"]))
+    for g, r in thirds[:8]:
+        actual_advancing.add(r["team_id"])
+
+    # Actual stage participants - derived from matches that have teams (post-progression)
+    matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
+    stage_teams: Dict[str, set] = defaultdict(set)
+    finals_teams: set = set()
+    champion_id: Optional[str] = None
+    for m in matches:
+        stage_l = (m.get("round") or m.get("stage") or "").lower()
+        for tid_key in ("home_team_id", "away_team_id"):
+            tid = m.get(tid_key)
+            if not tid:
+                continue
+            if "sextondelsfinal" in stage_l or m.get("stage") == "r32":
+                stage_teams["r32"].add(tid)
+            elif "åttondelsfinal" in stage_l or m.get("stage") == "r16":
+                stage_teams["r16"].add(tid)
+            elif "kvartsfinal" in stage_l or m.get("stage") == "qf":
+                stage_teams["qf"].add(tid)
+            elif "semifinal" in stage_l or m.get("stage") == "sf":
+                stage_teams["sf"].add(tid)
+            elif stage_l == "final" or m.get("stage") == "final":
+                finals_teams.add(tid)
+        # Determine champion
+        if (stage_l == "final" or m.get("stage") == "final") and m.get("status") == "finished":
+            if m.get("home_score") is not None and m.get("away_score") is not None:
+                if m["home_score"] > m["away_score"]:
+                    champion_id = m.get("home_team_id")
+                elif m["away_score"] > m["home_score"]:
+                    champion_id = m.get("away_team_id")
+
+    # Score each user's tournament predictions
+    tps = await db.tournament_predictions.find({}, {"_id": 0}).to_list(2000)
+    user_strategy: Dict[str, float] = defaultdict(float)
+    for tp in tps:
+        mult = VERSION_MULT.get(tp.get("version", 1), 1.0)
+        pts = 0
+        # Group rankings: 1st correct = +5; teams in advancing (top 2 or best third) = +3 each
+        for g, ranking in (tp.get("group_rankings") or {}).items():
+            if ranking and len(ranking) >= 1 and ranking[0] == actual_group_winners.get(g):
+                pts += STRATEGY_POINTS["group_winner"]
+            for tid in (ranking[:2] if ranking else []):
+                if tid and tid in actual_advancing:
+                    pts += STRATEGY_POINTS["advancing"]
+        # Bracket picks
+        for tid in (tp.get("r32") or []):
+            if tid in stage_teams["r32"]:
+                pts += STRATEGY_POINTS["r32"]
+        for tid in (tp.get("r16") or []):
+            if tid in stage_teams["r16"]:
+                pts += STRATEGY_POINTS["r16"]
+        for tid in (tp.get("qf") or []):
+            if tid in stage_teams["qf"]:
+                pts += STRATEGY_POINTS["qf"]
+        for tid in (tp.get("sf") or []):
+            if tid in stage_teams["sf"]:
+                pts += STRATEGY_POINTS["sf"]
+        for tid in (tp.get("finalists") or []):
+            if tid in finals_teams:
+                pts += STRATEGY_POINTS["finalist"]
+        if tp.get("champion") and champion_id and tp["champion"] == champion_id:
+            pts += STRATEGY_POINTS["champion"]
+        user_strategy[tp["user_id"]] += pts * mult
+
+    all_users = await db.users.find({}, {"id": 1, "_id": 0}).to_list(2000)
+    for u in all_users:
+        await db.users.update_one({"id": u["id"]}, {"$set": {"strategy_points": int(round(user_strategy.get(u["id"], 0)))}})
+
+# ============== Standings ==============
+async def compute_all_standings() -> Dict[str, list]:
+    """Return {group_letter: [ {team_id, team_name, country_code, played, won, drawn, lost, goals_for, goals_against, goal_diff, points}, ... ]}"""
+    teams = await db.teams.find({}, {"_id": 0}).to_list(200)
+    matches = await db.matches.find({"stage": {"$in": ["group", "Group Stage"]}, "status": "finished"}, {"_id": 0}).to_list(2000)
+    by_group: Dict[str, Dict[str, dict]] = defaultdict(dict)
+    for t in teams:
+        g = t.get("group")
+        if not g or t.get("disqualified"):
+            continue
+        by_group[g][t["id"]] = {
+            "team_id": t["id"], "team_name": t["team_name"], "country_code": t["country_code"],
+            "played": 0, "won": 0, "drawn": 0, "lost": 0,
+            "goals_for": 0, "goals_against": 0, "goal_diff": 0, "points": 0,
+        }
+    for m in matches:
+        g = m.get("group")
+        if g is None:
+            continue
+        h, a = m.get("home_team_id"), m.get("away_team_id")
+        if not h or not a:
+            continue
+        hs, as_ = m.get("home_score"), m.get("away_score")
+        if hs is None or as_ is None:
+            continue
+        hrow = by_group[g].get(h)
+        arow = by_group[g].get(a)
+        if not hrow or not arow:
+            continue
+        hrow["played"] += 1
+        arow["played"] += 1
+        hrow["goals_for"] += hs
+        hrow["goals_against"] += as_
+        arow["goals_for"] += as_
+        arow["goals_against"] += hs
+        if hs > as_:
+            hrow["won"] += 1
+            arow["lost"] += 1
+            hrow["points"] += 3
+        elif as_ > hs:
+            arow["won"] += 1
+            hrow["lost"] += 1
+            arow["points"] += 3
+        else:
+            hrow["drawn"] += 1
+            arow["drawn"] += 1
+            hrow["points"] += 1
+            arow["points"] += 1
+    out: Dict[str, list] = {}
+    for g, teams_map in by_group.items():
+        rows = list(teams_map.values())
+        for r in rows:
+            r["goal_diff"] = r["goals_for"] - r["goals_against"]
+        rows.sort(key=lambda r: (-r["points"], -r["goal_diff"], -r["goals_for"], r["team_name"]))
+        out[g] = rows
+    return out
+
+@api.get("/standings")
+async def get_standings():
+    return await compute_all_standings()
+
+# ============== Tournament Progression ==============
+PLACEHOLDER_GROUP_RE = re.compile(r"^([1234])([A-L])$")           # 1A, 2B, 3C
+PLACEHOLDER_THIRD_RE = re.compile(r"^3([A-L]{2,})$")              # 3ABCDF (best third among listed groups)
+PLACEHOLDER_W_RE = re.compile(r"^W(\d+)$")                        # W73
+PLACEHOLDER_RU_RE = re.compile(r"^RU(\d+)$")                      # RU101
+
+async def resolve_placeholder(label: Optional[str], standings: Dict[str, list], match_winners: Dict[int, str], match_losers: Dict[int, str], best_thirds: List[dict]) -> Optional[str]:
+    if not label:
+        return None
+    m = PLACEHOLDER_GROUP_RE.match(label)
+    if m:
+        pos = int(m.group(1))
+        g = m.group(2)
+        rows = standings.get(g, [])
+        if len(rows) >= pos:
+            return rows[pos - 1]["team_id"]
+        return None
+    m = PLACEHOLDER_THIRD_RE.match(label)
+    if m:
+        groups = list(m.group(1))
+        # Pick best 3rd among listed groups that is in qualified best-thirds
+        candidates = [t for t in best_thirds if t["group"] in groups]
+        if candidates:
+            return candidates[0]["team_id"]
+        return None
+    m = PLACEHOLDER_W_RE.match(label)
+    if m:
+        return match_winners.get(int(m.group(1)))
+    m = PLACEHOLDER_RU_RE.match(label)
+    if m:
+        return match_losers.get(int(m.group(1)))
+    return None
+
+async def progress_tournament():
+    """Replace placeholders with real teams where possible."""
+    # Group standings
+    standings = await compute_all_standings()
+    # Only consider a group complete when all 6 group matches finished (each team played 3)
+    group_complete = {g: all(r["played"] >= 3 for r in rows) for g, rows in standings.items()}
+    # Best thirds across all complete groups
+    thirds_pool = []
+    for g, rows in standings.items():
+        if group_complete.get(g) and len(rows) >= 3:
+            r = rows[2]
+            thirds_pool.append({**r, "group": g})
+    thirds_pool.sort(key=lambda r: (-r["points"], -r["goal_diff"], -r["goals_for"]))
+    best_thirds = thirds_pool[:8]
+
+    # Match winners/losers by match_number
+    finished = await db.matches.find({"status": "finished"}, {"_id": 0}).to_list(2000)
+    winners: Dict[int, str] = {}
+    losers: Dict[int, str] = {}
+    for m in finished:
+        n = m.get("match_number")
+        if n is None:
+            continue
+        hs, as_ = m.get("home_score"), m.get("away_score")
+        if hs is None or as_ is None:
+            continue
+        if hs > as_:
+            winners[n] = m.get("home_team_id")
+            losers[n] = m.get("away_team_id")
+        elif as_ > hs:
+            winners[n] = m.get("away_team_id")
+            losers[n] = m.get("home_team_id")
+
+    # Iterate matches and resolve placeholders
+    all_matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
+    updates = 0
+    for m in all_matches:
+        update = {}
+        if not m.get("home_team_id") and m.get("home_placeholder"):
+            # Only resolve group placeholders when group complete; W/RU when match finished
+            label = m["home_placeholder"]
+            mg = PLACEHOLDER_GROUP_RE.match(label) or PLACEHOLDER_THIRD_RE.match(label)
+            if mg and isinstance(mg, re.Match) and PLACEHOLDER_GROUP_RE.match(label):
+                if not group_complete.get(PLACEHOLDER_GROUP_RE.match(label).group(2)):
+                    pass
+                else:
+                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
+                    if tid:
+                        update["home_team_id"] = tid
+            elif PLACEHOLDER_THIRD_RE.match(label):
+                # Need all listed groups complete
+                groups = list(PLACEHOLDER_THIRD_RE.match(label).group(1))
+                if all(group_complete.get(g) for g in groups):
+                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
+                    if tid:
+                        update["home_team_id"] = tid
+            else:
+                tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
+                if tid:
+                    update["home_team_id"] = tid
+        if not m.get("away_team_id") and m.get("away_placeholder"):
+            label = m["away_placeholder"]
+            if PLACEHOLDER_GROUP_RE.match(label):
+                if group_complete.get(PLACEHOLDER_GROUP_RE.match(label).group(2)):
+                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
+                    if tid:
+                        update["away_team_id"] = tid
+            elif PLACEHOLDER_THIRD_RE.match(label):
+                groups = list(PLACEHOLDER_THIRD_RE.match(label).group(1))
+                if all(group_complete.get(g) for g in groups):
+                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
+                    if tid:
+                        update["away_team_id"] = tid
+            else:
+                tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
+                if tid:
+                    update["away_team_id"] = tid
+        if update:
+            await db.matches.update_one({"id": m["id"]}, {"$set": update})
+            updates += 1
+    if updates:
+        logger.info(f"Progression: updated {updates} matches with resolved placeholders")
+    # Recompute strategy points after progression
+    await recompute_strategy_points()
+
+@api.post("/admin/progress", dependencies=[Depends(require_admin)])
+async def admin_progress():
+    await progress_tournament()
+    return {"ok": True}
+
+# ============== Leaderboard ==============
 @api.get("/leaderboard")
 async def leaderboard():
     users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
@@ -419,28 +747,26 @@ async def leaderboard():
         r["rank"] = i + 1
     return rows
 
-# ---------- Admin ----------
-class InviteReq(BaseModel):
-    email: EmailStr
-
+# ============== Admin: Users & Invites ==============
 @api.get("/admin/users", dependencies=[Depends(require_admin)])
 async def admin_users():
-    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
-    return users
+    return await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
 
-@api.put("/admin/users/{user_id}/role", dependencies=[Depends(require_admin)])
-async def set_user_role(user_id: str, role: dict):
+@api.put("/admin/users/{user_id}/role")
+async def set_user_role(user_id: str, role: dict, admin: dict = Depends(require_admin)):
     new_role = role.get("role")
     if new_role not in ("admin", "user"):
-        raise HTTPException(status_code=400, detail="Invalid role")
+        raise HTTPException(400, "Invalid role")
     await db.users.update_one({"id": user_id}, {"$set": {"role": new_role}})
+    await log_audit(admin, "user_role_change", {"user_id": user_id, "new_role": new_role})
     return {"ok": True}
 
-@api.delete("/admin/users/{user_id}", dependencies=[Depends(require_admin)])
-async def delete_user(user_id: str):
+@api.delete("/admin/users/{user_id}")
+async def delete_user(user_id: str, admin: dict = Depends(require_admin)):
     await db.users.delete_one({"id": user_id})
     await db.match_predictions.delete_many({"user_id": user_id})
     await db.tournament_predictions.delete_many({"user_id": user_id})
+    await log_audit(admin, "user_delete", {"user_id": user_id})
     return {"ok": True}
 
 @api.post("/admin/invite", dependencies=[Depends(require_admin)])
@@ -451,166 +777,283 @@ async def invite_email(req: InviteReq):
 
 @api.get("/admin/invites", dependencies=[Depends(require_admin)])
 async def list_invites():
-    invs = await db.invites.find({}, {"_id": 0}).to_list(500)
-    return invs
+    return await db.invites.find({}, {"_id": 0}).to_list(500)
 
 @api.delete("/admin/invites/{email}", dependencies=[Depends(require_admin)])
 async def remove_invite(email: str):
     await db.invites.delete_one({"email": email.lower()})
     return {"ok": True}
 
-class StrategyReq(BaseModel):
-    user_id: str
-    points: int
-
-@api.post("/admin/strategy-points", dependencies=[Depends(require_admin)])
-async def set_strategy_points(req: StrategyReq):
+@api.post("/admin/strategy-points")
+async def set_strategy_points(req: StrategyReq, admin: dict = Depends(require_admin)):
     await db.users.update_one({"id": req.user_id}, {"$set": {"strategy_points": req.points}})
+    await log_audit(admin, "strategy_points_override", {"user_id": req.user_id, "points": req.points})
     return {"ok": True}
 
-@api.post("/admin/recompute", dependencies=[Depends(require_admin)])
-async def admin_recompute():
+@api.post("/admin/recompute")
+async def admin_recompute(admin: dict = Depends(require_admin)):
     await recompute_live_points()
+    await recompute_strategy_points()
+    await log_audit(admin, "recompute_all")
     return {"ok": True}
 
-# ---------- Seed Data ----------
-TEAMS_SEED = [
-    # Group A
-    {"team_name": "Mexico", "country_code": "MX", "group": "A"},
-    {"team_name": "Poland", "country_code": "PL", "group": "A"},
-    {"team_name": "Ecuador", "country_code": "EC", "group": "A"},
-    {"team_name": "Senegal", "country_code": "SN", "group": "A"},
-    # Group B
-    {"team_name": "England", "country_code": "GB", "group": "B"},
-    {"team_name": "Iran", "country_code": "IR", "group": "B"},
-    {"team_name": "USA", "country_code": "US", "group": "B"},
-    {"team_name": "Wales", "country_code": "GB", "group": "B"},
-    # Group C
-    {"team_name": "Argentina", "country_code": "AR", "group": "C"},
-    {"team_name": "Saudi Arabia", "country_code": "SA", "group": "C"},
-    {"team_name": "Mexico B", "country_code": "MX", "group": "C"},
-    {"team_name": "Costa Rica", "country_code": "CR", "group": "C"},
-    # Group D
-    {"team_name": "France", "country_code": "FR", "group": "D"},
-    {"team_name": "Australia", "country_code": "AU", "group": "D"},
-    {"team_name": "Denmark", "country_code": "DK", "group": "D"},
-    {"team_name": "Tunisia", "country_code": "TN", "group": "D"},
-    # Group E
-    {"team_name": "Spain", "country_code": "ES", "group": "E"},
-    {"team_name": "Germany", "country_code": "DE", "group": "E"},
-    {"team_name": "Japan", "country_code": "JP", "group": "E"},
-    {"team_name": "Costa Rica B", "country_code": "CR", "group": "E"},
-    # Group F
-    {"team_name": "Belgium", "country_code": "BE", "group": "F"},
-    {"team_name": "Canada", "country_code": "CA", "group": "F"},
-    {"team_name": "Morocco", "country_code": "MA", "group": "F"},
-    {"team_name": "Croatia", "country_code": "HR", "group": "F"},
-    # Group G
-    {"team_name": "Brazil", "country_code": "BR", "group": "G"},
-    {"team_name": "Serbia", "country_code": "RS", "group": "G"},
-    {"team_name": "Switzerland", "country_code": "CH", "group": "G"},
-    {"team_name": "Cameroon", "country_code": "CM", "group": "G"},
-    # Group H
-    {"team_name": "Portugal", "country_code": "PT", "group": "H"},
-    {"team_name": "Ghana", "country_code": "GH", "group": "H"},
-    {"team_name": "Uruguay", "country_code": "UY", "group": "H"},
-    {"team_name": "South Korea", "country_code": "KR", "group": "H"},
-    # Group I
-    {"team_name": "Netherlands", "country_code": "NL", "group": "I"},
-    {"team_name": "Norway", "country_code": "NO", "group": "I"},
-    {"team_name": "Egypt", "country_code": "EG", "group": "I"},
-    {"team_name": "Colombia", "country_code": "CO", "group": "I"},
-    # Group J
-    {"team_name": "Italy", "country_code": "IT", "group": "J"},
-    {"team_name": "Nigeria", "country_code": "NG", "group": "J"},
-    {"team_name": "Sweden", "country_code": "SE", "group": "J"},
-    {"team_name": "Paraguay", "country_code": "PY", "group": "J"},
-    # Group K
-    {"team_name": "Austria", "country_code": "AT", "group": "K"},
-    {"team_name": "Algeria", "country_code": "DZ", "group": "K"},
-    {"team_name": "Peru", "country_code": "PE", "group": "K"},
-    {"team_name": "Jamaica", "country_code": "JM", "group": "K"},
-    # Group L
-    {"team_name": "Ukraine", "country_code": "UA", "group": "L"},
-    {"team_name": "Scotland", "country_code": "GB", "group": "L"},
-    {"team_name": "Chile", "country_code": "CL", "group": "L"},
-    {"team_name": "Panama", "country_code": "PA", "group": "L"},
-]
+# ============== Admin: Teams (DQ etc.) ==============
+@api.post("/admin/teams/disqualify")
+async def disqualify_team(req: DisqualifyReq, admin: dict = Depends(require_admin)):
+    if not req.reason or not req.reason.strip():
+        raise HTTPException(400, "Reason is required")
+    t = await db.teams.find_one({"id": req.team_id})
+    if not t:
+        raise HTTPException(404, "Team not found")
+    await db.teams.update_one({"id": req.team_id}, {"$set": {
+        "disqualified": True,
+        "disqualified_at": now_utc().isoformat(),
+        "disqualified_reason": req.reason,
+        "disqualified_by": admin.get("name"),
+    }})
+    await log_audit(admin, "team_disqualify", {"team_id": req.team_id, "team_name": t["team_name"], "reason": req.reason})
+    await progress_tournament()
+    return {"ok": True}
 
-async def seed_db():
-    # Indexes
+@api.post("/admin/teams/{team_id}/reinstate")
+async def reinstate_team(team_id: str, admin: dict = Depends(require_admin)):
+    t = await db.teams.find_one({"id": team_id})
+    if not t:
+        raise HTTPException(404, "Team not found")
+    await db.teams.update_one({"id": team_id}, {"$unset": {"disqualified": "", "disqualified_at": "", "disqualified_reason": "", "disqualified_by": ""}})
+    await log_audit(admin, "team_reinstate", {"team_id": team_id, "team_name": t["team_name"]})
+    await progress_tournament()
+    return {"ok": True}
+
+class ManualAdvanceReq(BaseModel):
+    match_id: str
+    team_id: str
+    side: Literal["home", "away"]
+    reason: Optional[str] = None
+
+@api.post("/admin/manual-advance")
+async def manual_advance(req: ManualAdvanceReq, admin: dict = Depends(require_admin)):
+    m = await db.matches.find_one({"id": req.match_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(404, "Match not found")
+    key = "home_team_id" if req.side == "home" else "away_team_id"
+    await db.matches.update_one({"id": req.match_id}, {"$set": {key: req.team_id}})
+    await log_audit(admin, "manual_team_assign", {"match_id": req.match_id, "team_id": req.team_id, "side": req.side, "reason": req.reason})
+    return {"ok": True}
+
+# ============== Admin: Audit log ==============
+@api.get("/admin/audit-log", dependencies=[Depends(require_admin)])
+async def get_audit_log(limit: int = 200):
+    logs = await db.audit_log.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
+    return logs
+
+# ============== Admin: Excel Import ==============
+SWE_TZ_OFFSET_HOURS = 2  # Treat Excel times as Europe/Stockholm summer (UTC+2). Store as UTC ISO.
+
+def parse_xlsx(file_bytes: bytes) -> Dict[str, Any]:
+    """Parse the Excel file and return preview structure WITHOUT writing to DB."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    teams_data: List[dict] = []
+    matches_data: List[dict] = []
+    errors: List[str] = []
+    if "Teams" in wb.sheetnames:
+        ws = wb["Teams"]
+        rows = list(ws.iter_rows(values_only=True))
+        for i, row in enumerate(rows[1:], 2):
+            if not row or not row[0]:
+                continue
+            try:
+                teams_data.append({"team_name": str(row[0]).strip(), "group": str(row[1]).strip().upper(),
+                                   "country_code": str(row[2]).strip()})
+            except Exception as e:
+                errors.append(f"Teams row {i}: {e}")
+    if "Matches_Import" in wb.sheetnames:
+        ws = wb["Matches_Import"]
+        rows = list(ws.iter_rows(values_only=True))
+        for i, row in enumerate(rows[1:], 2):
+            if not row or row[0] is None:
+                continue
+            try:
+                match_id, stage, round_, group, date, time_, ht, at_, hcc, acc, tv, status, hs, as_, notes = row
+                # Date+time -> ISO. Excel stores as date objects or strings.
+                if isinstance(date, datetime):
+                    d_str = date.strftime("%Y-%m-%d")
+                else:
+                    d_str = str(date)
+                if isinstance(time_, datetime):
+                    t_str = time_.strftime("%H:%M")
+                else:
+                    t_str = str(time_) if time_ else "00:00"
+                # Build naive Swedish-local datetime and convert to UTC ISO
+                dt_naive = datetime.fromisoformat(f"{d_str}T{t_str}:00")
+                dt_utc = dt_naive - timedelta(hours=SWE_TZ_OFFSET_HOURS)
+                kickoff_iso = dt_utc.replace(tzinfo=timezone.utc).isoformat()
+                m = {
+                    "match_number": int(match_id) if match_id is not None else None,
+                    "stage": str(stage).strip() if stage else "Group Stage",
+                    "round": str(round_).strip() if round_ else None,
+                    "group": str(group).strip().upper() if group else None,
+                    "kickoff": kickoff_iso,
+                    "home_team": str(ht).strip() if ht else None,
+                    "away_team": str(at_).strip() if at_ else None,
+                    "home_country_code": str(hcc).strip() if hcc else None,
+                    "away_country_code": str(acc).strip() if acc else None,
+                    "tv_channel": str(tv).strip() if tv else None,
+                    "status": str(status).strip() if status else "scheduled",
+                    "home_score": hs, "away_score": as_,
+                    "notes": str(notes).strip() if notes else None,
+                }
+                matches_data.append(m)
+            except Exception as e:
+                errors.append(f"Matches row {i}: {e}")
+    # Detect duplicates by (stage, kickoff, home_team, away_team)
+    seen = set()
+    duplicates = []
+    for m in matches_data:
+        key = (m["stage"], m["kickoff"], m["home_team"], m["away_team"])
+        if key in seen:
+            duplicates.append(m["match_number"])
+        seen.add(key)
+    return {
+        "teams": teams_data, "matches": matches_data,
+        "groups_detected": sorted({t["group"] for t in teams_data if t.get("group")}),
+        "group_matches": sum(1 for m in matches_data if "group" in (m.get("stage") or "").lower()),
+        "knockout_matches": sum(1 for m in matches_data if "knockout" in (m.get("stage") or "").lower()),
+        "duplicates": duplicates, "errors": errors,
+    }
+
+def is_placeholder(label: Optional[str]) -> bool:
+    if not label:
+        return False
+    return bool(PLACEHOLDER_GROUP_RE.match(label) or PLACEHOLDER_THIRD_RE.match(label)
+                or PLACEHOLDER_W_RE.match(label) or PLACEHOLDER_RU_RE.match(label))
+
+async def write_import(parsed: Dict[str, Any], replace: bool = True) -> Dict[str, Any]:
+    # Build/upsert teams
+    if replace:
+        await db.teams.delete_many({})
+        await db.matches.delete_many({})
+        await db.match_predictions.delete_many({})
+    team_id_by_name: Dict[str, str] = {}
+    for t in parsed["teams"]:
+        doc = {"id": str(uuid.uuid4()), "team_name": t["team_name"],
+               "country_code": t["country_code"], "group": t["group"]}
+        await db.teams.update_one({"team_name": t["team_name"]}, {"$set": doc}, upsert=True)
+        existing = await db.teams.find_one({"team_name": t["team_name"]}, {"_id": 0, "id": 1})
+        team_id_by_name[t["team_name"]] = existing["id"] if existing else doc["id"]
+    inserted = 0
+    for m in parsed["matches"]:
+        # Determine if home/away are real team names or placeholders
+        home_label, away_label = m.get("home_team"), m.get("away_team")
+        home_id = team_id_by_name.get(home_label) if home_label and not is_placeholder(home_label) else None
+        away_id = team_id_by_name.get(away_label) if away_label and not is_placeholder(away_label) else None
+        home_placeholder = home_label if is_placeholder(home_label) else None
+        away_placeholder = away_label if is_placeholder(away_label) else None
+        stage_lower = (m.get("stage") or "").lower()
+        # Map stage label
+        if "knockout" in stage_lower or (m.get("round") or "").lower() in ("sextondelsfinal", "åttondelsfinal", "kvartsfinal", "semifinal", "bronsmatch", "final"):
+            stage_norm = "Knockout"
+        else:
+            stage_norm = "Group Stage"
+        doc = {
+            "id": str(uuid.uuid4()),
+            "match_number": m.get("match_number"),
+            "stage": stage_norm,
+            "round": m.get("round"),
+            "group": m.get("group"),
+            "kickoff": m.get("kickoff"),
+            "home_team_id": home_id, "away_team_id": away_id,
+            "home_placeholder": home_placeholder, "away_placeholder": away_placeholder,
+            "home_country_code": m.get("home_country_code"),
+            "away_country_code": m.get("away_country_code"),
+            "tv_channel": m.get("tv_channel"),
+            "home_score": m.get("home_score") if isinstance(m.get("home_score"), int) else None,
+            "away_score": m.get("away_score") if isinstance(m.get("away_score"), int) else None,
+            "status": "finished" if (isinstance(m.get("home_score"), int) and isinstance(m.get("away_score"), int)) else "upcoming",
+        }
+        await db.matches.insert_one(doc)
+        inserted += 1
+    return {"teams_inserted": len(parsed["teams"]), "matches_inserted": inserted}
+
+@api.post("/admin/import-preview")
+async def import_preview(file: UploadFile = File(...), admin: dict = Depends(require_admin)):
+    data = await file.read()
+    parsed = parse_xlsx(data)
+    # Strip out heavy lists for preview summary
+    return {
+        "summary": {
+            "teams_count": len(parsed["teams"]),
+            "matches_count": len(parsed["matches"]),
+            "groups_detected": parsed["groups_detected"],
+            "group_matches": parsed["group_matches"],
+            "knockout_matches": parsed["knockout_matches"],
+            "duplicates": parsed["duplicates"],
+            "errors": parsed["errors"],
+        },
+        "teams_sample": parsed["teams"][:6],
+        "matches_sample": parsed["matches"][:8],
+    }
+
+@api.post("/admin/import-commit")
+async def import_commit(file: UploadFile = File(...), replace: bool = Form(True), admin: dict = Depends(require_admin)):
+    data = await file.read()
+    parsed = parse_xlsx(data)
+    if parsed["errors"]:
+        return {"ok": False, "errors": parsed["errors"]}
+    result = await write_import(parsed, replace=replace)
+    await log_audit(admin, "excel_import", {"replace": replace, **result})
+    await recompute_live_points()
+    await progress_tournament()
+    return {"ok": True, **result, "summary": {
+        "groups_detected": parsed["groups_detected"],
+        "group_matches": parsed["group_matches"],
+        "knockout_matches": parsed["knockout_matches"],
+        "duplicates": parsed["duplicates"],
+    }}
+
+# ============== Seed ==============
+async def seed_admin():
     await db.users.create_index("email", unique=True)
     await db.teams.create_index("id", unique=True)
     await db.matches.create_index("id", unique=True)
     await db.match_predictions.create_index([("user_id", 1), ("match_id", 1)], unique=True)
     await db.tournament_predictions.create_index([("user_id", 1), ("version", 1)], unique=True)
     await db.invites.create_index("email", unique=True)
-
-    # Admin
-    existing_admin = await db.users.find_one({"email": ADMIN_EMAIL})
-    if not existing_admin:
+    await db.config.create_index("key", unique=True)
+    existing = await db.users.find_one({"email": ADMIN_EMAIL})
+    if not existing:
         await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "name": "Gabriella Bengtsson",
-            "email": ADMIN_EMAIL,
-            "password_hash": hash_password(ADMIN_PASSWORD),
-            "role": "admin",
-            "created_at": now_utc().isoformat(),
-            "live_points": 0,
-            "strategy_points": 0,
+            "id": str(uuid.uuid4()), "name": "Gabriella Bengtsson",
+            "email": ADMIN_EMAIL, "password_hash": hash_password(ADMIN_PASSWORD),
+            "role": "admin", "created_at": now_utc().isoformat(),
+            "live_points": 0, "strategy_points": 0,
         })
         logger.info("Seeded admin user")
 
-    # Teams
-    if await db.teams.count_documents({}) == 0:
-        teams = [TeamModel(**t).model_dump() for t in TEAMS_SEED]
-        await db.teams.insert_many(teams)
-        logger.info(f"Seeded {len(teams)} teams")
-
-    # Sample matches (one per group, simple round-robin starter)
-    if await db.matches.count_documents({}) == 0:
-        groups_teams = {}
-        cur = db.teams.find({}, {"_id": 0})
-        async for t in cur:
-            groups_teams.setdefault(t["group"], []).append(t)
-        sample_matches = []
-        base = now_utc() + timedelta(days=2)
-        for i, (g, ts) in enumerate(sorted(groups_teams.items())):
-            if len(ts) >= 2:
-                kickoff = base + timedelta(hours=i * 3)
-                sample_matches.append({
-                    "id": str(uuid.uuid4()),
-                    "stage": "group",
-                    "group": g,
-                    "home_team_id": ts[0]["id"],
-                    "away_team_id": ts[1]["id"],
-                    "kickoff": kickoff.isoformat(),
-                    "home_score": None,
-                    "away_score": None,
-                    "status": "upcoming",
-                })
-            if len(ts) >= 4:
-                kickoff = base + timedelta(hours=i * 3 + 1)
-                sample_matches.append({
-                    "id": str(uuid.uuid4()),
-                    "stage": "group",
-                    "group": g,
-                    "home_team_id": ts[2]["id"],
-                    "away_team_id": ts[3]["id"],
-                    "kickoff": kickoff.isoformat(),
-                    "home_score": None,
-                    "away_score": None,
-                    "status": "upcoming",
-                })
-        if sample_matches:
-            await db.matches.insert_many(sample_matches)
-            logger.info(f"Seeded {len(sample_matches)} sample matches")
+async def seed_from_xlsx_if_needed():
+    xlsx_path = DATA_DIR / "vm2026.xlsx"
+    if not xlsx_path.exists():
+        logger.info("No VM2026 xlsx found; skipping auto-import")
+        return
+    # If we have fewer than 48 teams or no matches with match_number, force import
+    teams_count = await db.teams.count_documents({})
+    matches_with_number = await db.matches.count_documents({"match_number": {"$ne": None}})
+    if teams_count >= 48 and matches_with_number >= 100:
+        logger.info("DB already has VM2026 data; skipping auto-import")
+        return
+    logger.info("Auto-importing VM2026 fixtures from xlsx...")
+    with open(xlsx_path, "rb") as f:
+        parsed = parse_xlsx(f.read())
+    await write_import(parsed, replace=True)
+    await progress_tournament()
+    logger.info(f"Auto-imported {len(parsed['teams'])} teams, {len(parsed['matches'])} matches")
 
 @app.on_event("startup")
 async def on_startup():
-    await seed_db()
+    await seed_admin()
+    await seed_from_xlsx_if_needed()
 
-# ---------- Mount ----------
+# ============== Mount ==============
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
@@ -620,9 +1063,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
