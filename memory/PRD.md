@@ -20,7 +20,7 @@ Private, mobile-first FIFA World Cup 2026 prediction web app for family + friend
 - V1 deadline configuration.
 - Mobile-first FIFA-style dark UI with `react-country-flag` SVG flags everywhere.
 
-## Implemented (2026-02 / iteration 2)
+## Implemented (2026-02 / iteration 2 + 3)
 - All endpoints + auto-imported xlsx (48 teams, 72 group + 32 knockout matches, TV channels).
 - Auto-progression: group standings + placeholder resolution + strategy recompute.
 - Admin Panel with 8 tabs: Results, Teams/DQ, Import, V1 Deadline, Users, Invites, Scoring, Audit Log.
@@ -28,7 +28,8 @@ Private, mobile-first FIFA World Cup 2026 prediction web app for family + friend
 - Dashboard group standings preview + upcoming matches with TV/round badges.
 - Winner highlight (green) / loser dim on finished matches.
 - Audit log for every admin mutating action.
-- 29/29 backend pytest passing.
+- **(iter 3)** Swedish locale + Europe/Stockholm timezone everywhere in the UI (e.g. `Torsdag 11 juni · 21:00`). Backend stays UTC internally. Admin datetime inputs convert Swedish wall-clock ↔ UTC correctly across DST.
+- Tested: 29/29 backend pytest passing + frontend 100% on iter-2 and iter-3 criteria.
 
 ## Backlog (P1)
 - DRY-extract progression placeholder logic into helper.

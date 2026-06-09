@@ -75,11 +75,11 @@ export default function Dashboard() {
           {upcoming.map((m) => (
             <Link to="/matches" key={m.id} data-testid={`dash-match-${m.id}`}
               className="block p-3 hover:bg-white/5 transition-all">
-              <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-zinc-500 mb-2">
-                <span>#{m.match_number} · {m.round || m.stage}{m.group ? ` · G ${m.group}` : ""}</span>
+              <div className="flex items-center justify-between text-[10px] tracking-widest text-zinc-500 mb-2">
+                <span className="uppercase">#{m.match_number} · {m.round || m.stage}{m.group ? ` · G ${m.group}` : ""}</span>
                 <span className="inline-flex items-center gap-1">
-                  {m.tv_channel && <><Television size={12} className="text-[#FFCC00]" /><span className="text-[#FFCC00]">{m.tv_channel}</span>·</>}
-                  {fmtKick(m.kickoff)}
+                  {m.tv_channel && <><Television size={12} className="text-[#FFCC00]" /><span className="text-[#FFCC00] uppercase">{m.tv_channel}</span><span className="text-zinc-700">·</span></>}
+                  <span className="normal-case">{fmtKick(m.kickoff)}</span>
                 </span>
               </div>
               <div className="flex items-center justify-between gap-2">
