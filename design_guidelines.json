@@ -1,0 +1,94 @@
+{
+  "project_name": "Family World Cup 2026",
+  "theme_and_archetype": {
+    "theme": "dark",
+    "archetype": "Archetype 2: The Performance Pro (Elite Athleticism & Precision)",
+    "description": "Tactical Minimalism tailored for a mobile-first sports prediction game. High contrast, energetic feel with deep blacks and striking electric accents.",
+    "domain": "Sports, App Dashboard, Mobile-First Web App"
+  },
+  "typography": {
+    "rules": "Avoid generic headers. Use wide fluid scale for readability.",
+    "heading_font": "Outfit",
+    "body_font": "Manrope",
+    "scales": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-black",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl tracking-tight font-bold",
+      "h4": "text-lg sm:text-xl font-semibold",
+      "body": "text-base leading-relaxed text-zinc-300",
+      "labels": "text-xs tracking-[0.2em] uppercase font-bold text-zinc-400"
+    }
+  },
+  "colors": {
+    "backgrounds": {
+      "primary": "#0A0A0A",
+      "surface": "#141414",
+      "surface_elevated": "#1C1C1C",
+      "overlay": "rgba(0, 0, 0, 0.7)"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "inverse": "#0A0A0A"
+    },
+    "accents": {
+      "primary": "#00F0FF",
+      "secondary": "#39FF14",
+      "danger": "#FF3B30",
+      "warning": "#FFCC00"
+    },
+    "borders": {
+      "default": "rgba(255, 255, 255, 0.1)",
+      "focus": "#00F0FF"
+    },
+    "contrast_rules": "Ensure minimum 4.5:1 for normal text. Use Text Shadow over images. Never use pure transparent backgrounds for headers."
+  },
+  "layout_and_spacing": {
+    "strategy": "Mobile-first approach. All components must fit narrow viewports beautifully.",
+    "spacing_scale": "p-4 and p-6 for mobile containers; p-8 for desktop layouts. Use gap-4 for dense widgets.",
+    "dashboard_grid": "The 'Control Room' Grid: grid-cols-1 on mobile, md:grid-cols-3 on desktop. Ensure h-full for children so bento cards stretch evenly.",
+    "surfaces": "Grid Borders (The 'Technical' Look). Use 1px solid strokes (border-white/10) instead of soft shadows. Sharp radii (rounded-none to rounded-md max)."
+  },
+  "components_strategy": {
+    "icons": "Use @phosphor-icons/react. Command: yarn add @phosphor-icons/react. Use Duotone or Bold weights for athletic feel.",
+    "flags": "MANDATORY: Use react-country-flag. Command: yarn add react-country-flag. Render SVG format everywhere a team is shown. Layout: [Flag] [Team Name] (e.g., 🇸🇪 Sweden).",
+    "forms_and_inputs": "Use Shadcn components heavily customized to dark mode. Strip Vercel look, add 1px sharp borders and neon focus states.",
+    "tabs": "Override Shadcn fixed heights (h-auto). Use for 'Live Points', 'Strategy Points', 'Total Points' Leaderboard tabs.",
+    "cards": "Cardless or 'technical' grid look. Matches should look like tactical data rows rather than floating cards.",
+    "tournament_bracket": "Use horizontal scroll overflow (overflow-x-auto) on mobile. Use technical connector lines (border-t border-r) to link advancing teams. Highlight predicted winners with accent_primary text/borders."
+  },
+  "motion_and_interaction": {
+    "hover_states": "ALWAYS set hover:text-white and hover:border-white/30. Active/Selected state gets primary accent border.",
+    "transitions": "transition-all duration-200 ease-out",
+    "focus_states": "focus:ring-2 focus:ring-[#00F0FF] focus:outline-none"
+  },
+  "media_assets": {
+    "hero_login": {
+      "url": "https://images.pexels.com/photos/35898730/pexels-photo-35898730.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Aerial night football stadium. Apply bg-black/70 overlay. Use for Login/Register."
+    },
+    "leaderboard_header": {
+      "url": "https://images.unsplash.com/photo-1665413811870-5b29a250f64a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwxfHxjaGVlcmluZyUyMGZhbnMlMjBzdGFkaXVtfGVufDB8fHx8MTc4MTAwOTE3M3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Cheering fans for leaderboard background. Apply heavy dark gradient to transparent to maintain text legibility."
+    },
+    "dashboard_accent": {
+      "url": "https://images.unsplash.com/photo-1575361204480-aadea25e6e68?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwxfHxzb2NjZXIlMjBiYWxsJTIwZ3Jhc3N8ZW58MHx8fHwxNzgxMDA5MTczfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Soccer ball on grass for empty states or generic sports accents."
+    }
+  },
+  "accessibility_and_testing": {
+    "testing_attributes": "All interactive elements, buttons, inputs, tabs, and prediction cards MUST include data-testid attribute (e.g., data-testid='submit-prediction-button').",
+    "contrast": "Ensure text over images is readable using heavy overlays or text-shadow."
+  },
+  "instructions_to_main_agent": [
+    "You are building 'Family World Cup 2026', a private prediction web app.",
+    "Tech Stack: React JS (use .js/.jsx, NOT TypeScript .tsx per critical rules), Tailwind CSS, Shadcn UI, Supabase.",
+    "Enforce the 'Performance Pro' dark theme. Avoid standard generic SaaS styles.",
+    "Implement navigation between Login, Register, Dashboard, Matches, Leaderboard, Tournament Prediction, and Admin pages.",
+    "Leaderboard must prominently feature the three point columns: Live Points, Strategy Points, Total Points.",
+    "Every mention of a team name MUST include its SVG flag using react-country-flag.",
+    "Use Phosphor icons for standard iconography.",
+    "Ensure the entire app is strictly mobile-first. Test padding, grid spans, and typography scaling for narrow viewports.",
+    "Include data-testid on every clickable element."
+  ]
+}
