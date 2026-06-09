@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 6 fully verified. Backend: 19/19 pytest tests pass on /app/backend/tests/test_iteration6.py covering (a) GET /api/strategy/versions returns 7 versions in spec order with match counts 72/16/8/4/2/1/1 and default_deadline prefixes 2026-06-11T18:55, 2026-06-28T18:55, 2026-07-04T16:55, 2026-07-09T19:55, 2026-07-14T18:55, 2026-07-18T20:55, 2026-07-19T18:55, (b) GET /api/strategy/version/r32/matches returns 16 matches all stage='Knockout' round prefix 'Sextondelsfinal', (c) POST /api/strategy/version/pre_tournament group_rankings validation (duplicate=400 'varje lag', wrong group=400 'tillhör inte gruppen', valid=200), (d) POST /api/strategy/version/r32 winner picks (invalid match id=400 'ingår inte i denna version', team-not-in-match=400 'Vinnaren måste vara ett av matchens lag', valid=200), (e) admin override status='closed' makes POST return 400 'Tippning stängd', (f) GET predictions returns {locked:true,predictions:[]} pre-deadline for non-admin and full list with user_name after admin closes, (g) override audit_log entry contains version_id+old_value+new_value, (h) status='open' forces locked=false even with past custom_deadline, (i) recompute endpoint 200 ok, (j) regression 104 matches/48 teams/leaderboard/predictions. Scoring smoke test: admin login → set home_score=2,away_score=0 on a r32 match where user picked home → recompute → user.strategy_points = 8; flipped result to 0-2 → recompute → 0. Frontend (admin login on /tournament + /admin): 7 version-<id> cards render with Swedish labels and ÖPPEN indicators, clicking version-r32 shows 16 ko-match-<id> cards; only the resolved match #73 (Mexiko vs Sydafrika with flags) has 2 ko-pick-<m>-<t> buttons; the 15 placeholder matches (1C vs 2F, 1E vs 3ABCDF, etc.) correctly show 'Lagen bestäms när bracket uppdateras' and zero pick buttons. Admin Strategiversioner tab lists all 7 versions; each has override-auto-<id>/override-open-<id>/override-closed-<id>/dl-input-<id>/dl-save-<id> selectors and strategy-recompute button. Active AUTO override is highlighted with cyan border per spec.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration6.py",
+    "/app/test_reports/pytest/iter6_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py L529-539 VERSION_DEFS is the single source of truth for 7 versions, labels, round_filter regex, stage_filter and points_per_correct - clean and easy to extend.",
+    "server.py L558-571 matches_for_version uses case-insensitive regex prefix match on the Swedish round name; sort by kickoff+match_number is deterministic.",
+    "server.py L573-581 compute_default_deadline correctly subtracts 5 minutes from earliest kickoff; tz-naive kickoff is treated as UTC.",
+    "server.py L632-694 submit_strategy_version validates (a) version_id ∈ VALID_VERSION_IDS, (b) state.locked → 400 'Tippning stängd', (c) pre_tournament group_rankings full validation reused from iter5, (d) knockout picks: match_id ∈ this version, team_id ∈ {home,away} when known. Upserts on (user_id, version) - good idempotency.",
+    "server.py L696-708 visible_strategy_predictions correctly returns empty when locked=false-and-not-admin (since visibility requires state.locked == True i.e. deadline passed); admin can always see. Attaches user_name from db.users lookup.",
+    "server.py L772-878 recompute_strategy_points handles legacy integer/digit-string version IDs by treating as pre_tournament (back-compat) and uses points_per_correct from VERSION_BY_ID for knockout picks. Verified 8 points for correct r32 pick.",
+    "Frontend TournamentPrediction.jsx 379 lines, Admin.jsx 776 lines, server.py 1511 lines - all approaching modularization threshold but still readable.",
+    "Minor: PreTournamentEditor pulls advancing[] and bracket lists but those legacy fields likely deprecated by the new 7-stage flow - safe to consider trimming in a future iteration.",
+    "data-testid coverage on knockout match cards (ko-match-<id>) and pick buttons (ko-pick-<id>-<team_id>) matches spec exactly; admin override testids (override-auto/open/closed-<id>, dl-input-<id>, dl-save-<id>, strategy-recompute) all present and clickable."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration6.py"],
+  "success_rate": {"backend": "100% (19/19) + scoring smoke test pass", "frontend": "100% (all spec selectors + Swedish labels + placeholder behavior verified)"},
+  "test_credentials": "Admin: gabriella.bengtsson2@gmail.com / WorldCup2026!. Transient TEST_iter6_viewer_*/picker_*/score_* users created and DELETE'd during run.",
+  "seed_data_creation": "Two transient users (viewer + picker) created via /admin/invite + /auth/register and deleted via /admin/users/{id} DELETE with confirmation=DELETE. Scoring smoke test transient match result temporarily set on a r32 match then reset to (None,None). All strategy_override config rows reset to {status:auto, custom_deadline:null} on teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 6 (7-version strategy system) is production-ready. Canonical regression: /app/backend/tests/test_iteration6.py (19 tests). The old /api/config/v1..v4-deadline routes are still in server.py for backward-compat but no longer wired to the new frontend; iter5 test file (test_iteration5.py) still uses them and continues to pass. Default deadlines are computed from real fixture kickoffs (Europe/Stockholm) - if /admin/import re-imports matches with shifted kickoffs, the spec deadline prefixes (2026-06-11T18:55 etc.) will move accordingly. For future testing: r32 match #73 (Mexiko vs Sydafrika) is the only KO match pre-populated with both teams; to test winner picks on other rounds you must either (a) progress group stage via /admin/progress to resolve placeholders or (b) directly populate home_team_id/away_team_id via mongo. legacy tournament_predictions docs with integer version=1..4 are mapped to pre_tournament scoring by recompute - harmless to existing data."
+}

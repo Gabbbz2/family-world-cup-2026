@@ -27,7 +27,7 @@ const TABS = [
   { id: "results", label: "Resultat" },
   { id: "teams", label: "Lag / DQ" },
   { id: "import", label: "Importera" },
-  { id: "deadlines", label: "Deadlines" },
+  { id: "deadlines", label: "Strategiversioner" },
   { id: "users", label: "Användare" },
   { id: "invites", label: "Inbjudningar" },
   { id: "scoring", label: "Poäng" },
@@ -364,45 +364,103 @@ function ImportTab() {
   );
 }
 
-// ---------- Deadlines (V1-V4) ----------
+// ---------- Strategy Versions (admin override) ----------
 function DeadlinesTab() {
-  const [deadlines, setDeadlines] = useState({});
-  const [inputs, setInputs] = useState({});
+  const [versions, setVersions] = useState([]);
   const [msg, setMsg] = useState("");
+  const [customs, setCustoms] = useState({});
+
   const load = async () => {
-    const { data } = await api.get("/config/deadlines");
-    setDeadlines(data);
+    const { data } = await api.get("/strategy/versions");
+    setVersions(data);
     const next = {};
-    for (const v of [1, 2, 3, 4]) {
-      next[v] = data[String(v)] ? utcIsoToSwedishLocalInput(data[String(v)]) : "";
-    }
-    setInputs(next);
+    data.forEach((v) => {
+      next[v.id] = v.deadline ? utcIsoToSwedishLocalInput(v.deadline) : "";
+    });
+    setCustoms(next);
   };
   useEffect(() => { load(); }, []);
-  const save = async (v) => {
-    if (!inputs[v]) return;
-    const iso = swedishLocalInputToUtcIso(inputs[v]);
-    await api.post(`/config/v${v}-deadline`, { deadline: iso });
-    setMsg(`Version ${v} deadline uppdaterad`); load();
+
+  const setOverride = async (v, status) => {
+    let payload = { status };
+    if (status === "auto") {
+      payload.custom_deadline = null;
+    } else if (customs[v.id]) {
+      payload.custom_deadline = swedishLocalInputToUtcIso(customs[v.id]);
+    }
+    try {
+      await api.post(`/admin/strategy/version/${v.id}/override`, payload);
+      setMsg(`${v.label} → ${status}`); load();
+    } catch (e) { setMsg(formatError(e)); }
   };
+  const saveCustom = async (v) => {
+    if (!customs[v.id]) return;
+    const iso = swedishLocalInputToUtcIso(customs[v.id]);
+    try {
+      await api.post(`/admin/strategy/version/${v.id}/override`, { status: "auto", custom_deadline: iso });
+      setMsg(`${v.label} deadline uppdaterad`); load();
+    } catch (e) { setMsg(formatError(e)); }
+  };
+  const recompute = async () => {
+    await api.post("/admin/strategy/recompute");
+    setMsg("Strategipoäng räknade om");
+  };
+
   return (
-    <Section title="Deadlines Version 1–4">
-      <p className="text-zinc-500 text-xs mb-3">Anges i svensk lokaltid (Europe/Stockholm). När deadline passerats kan tipset för den versionen inte längre redigeras.</p>
-      {msg && <div className="text-[#39FF14] text-sm mb-2">{msg}</div>}
+    <Section
+      title="Strategiversioner"
+      action={
+        <button data-testid="strategy-recompute" onClick={recompute}
+          className="text-xs uppercase tracking-widest border border-white/10 text-[#00F0FF] px-3 py-1 inline-flex items-center gap-1">
+          <ArrowsClockwise size={12} /> Räkna om strategipoäng
+        </button>
+      }
+    >
+      <p className="text-zinc-500 text-xs mb-3">
+        Varje version öppnar automatiskt 5 minuter före första matchen i sitt skede. Du kan tvinga öppna / stänga eller sätta en egen deadline.
+      </p>
+      {msg && <div className="text-[#39FF14] text-sm mb-2" data-testid="strategy-msg">{msg}</div>}
       <div className="space-y-3">
-        {[1, 2, 3, 4].map((v) => (
-          <div key={v} className="border border-white/10 p-3" data-testid={`dl-row-${v}`}>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="label-eyebrow w-20">Version {v}</div>
-              <input type="datetime-local" data-testid={`dl-input-${v}`}
-                value={inputs[v] || ""} onChange={(e) => setInputs((p) => ({ ...p, [v]: e.target.value }))}
-                className="bg-[#0A0A0A] border border-white/10 px-3 py-2 text-sm" />
-              <button data-testid={`dl-save-${v}`} onClick={() => save(v)} disabled={!inputs[v]}
-                className="bg-[#00F0FF] text-black font-bold px-3 py-2 text-xs uppercase tracking-widest disabled:opacity-50 inline-flex items-center gap-1">
-                <CalendarBlank size={14} /> Spara V{v}
+        {versions.map((v) => (
+          <div key={v.id} className="border border-white/10 p-3" data-testid={`dl-row-${v.id}`}>
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div>
+                <div className="font-display font-bold">{v.label}</div>
+                <div className="text-[10px] uppercase tracking-widest text-zinc-500">
+                  {v.match_count} matcher
+                  {v.points_per_correct ? ` · ${v.points_per_correct} p/rätt` : " · första tipset"}
+                  {" · "}
+                  {v.locked ? <span className="text-zinc-400">Stängd</span> : <span className="text-[#39FF14]">Öppen</span>}
+                  {" · "}
+                  <span className="text-[#00F0FF]">{v.override_status}</span>
+                </div>
+              </div>
+              <div className="flex gap-1 flex-wrap">
+                <button data-testid={`override-auto-${v.id}`} onClick={() => setOverride(v, "auto")}
+                  className={`text-[10px] uppercase tracking-widest border px-2 py-1 ${v.override_status === "auto" ? "border-[#00F0FF] text-[#00F0FF]" : "border-white/10 text-zinc-400"}`}>
+                  Auto
+                </button>
+                <button data-testid={`override-open-${v.id}`} onClick={() => setOverride(v, "open")}
+                  className={`text-[10px] uppercase tracking-widest border px-2 py-1 ${v.override_status === "open" ? "border-[#39FF14] text-[#39FF14]" : "border-white/10 text-zinc-400"}`}>
+                  Tvinga öppen
+                </button>
+                <button data-testid={`override-closed-${v.id}`} onClick={() => setOverride(v, "closed")}
+                  className={`text-[10px] uppercase tracking-widest border px-2 py-1 ${v.override_status === "closed" ? "border-[#FF3B30] text-[#FF3B30]" : "border-white/10 text-zinc-400"}`}>
+                  Tvinga stängd
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span className="label-eyebrow">Deadline:</span>
+              <input type="datetime-local" data-testid={`dl-input-${v.id}`}
+                value={customs[v.id] || ""} onChange={(e) => setCustoms((p) => ({ ...p, [v.id]: e.target.value }))}
+                className="bg-[#0A0A0A] border border-white/10 px-2 py-1 text-sm" />
+              <button data-testid={`dl-save-${v.id}`} onClick={() => saveCustom(v)} disabled={!customs[v.id]}
+                className="bg-[#00F0FF] text-black font-bold px-2 py-1 uppercase tracking-widest text-[10px] disabled:opacity-50">
+                Spara
               </button>
-              {deadlines[String(v)] && (
-                <span className="text-xs text-zinc-400">Aktuell: {fmtSwedishCompact(deadlines[String(v)])}</span>
+              {v.default_deadline && (
+                <span className="text-zinc-500">Standard: {fmtSwedishCompact(v.default_deadline)}</span>
               )}
             </div>
           </div>

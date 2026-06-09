@@ -522,6 +522,216 @@ async def set_version_deadline(version: int, req: DeadlineReq, admin: dict = Dep
     await log_audit(admin, "deadline_changed", {"version": version, "old_value": prev, "new_value": dl})
     return {"ok": True}
 
+# ============== Strategy Versions (new system) ==============
+# A series of tipping rounds, each opening just before the relevant stage.
+# pre_tournament keeps the legacy V1 shape (group_rankings + bracket lists + champion).
+# All other versions store {picks: {match_id: team_id}} — winner-only, no scores.
+VERSION_DEFS = [
+    {"id": "pre_tournament", "label": "Första Tipset", "order": 1, "round_filter": None, "stage_filter": "Group Stage", "points_per_correct": None},
+    {"id": "r32",            "label": "Tips Sextondelsfinal", "order": 2, "round_filter": "sextondelsfinal", "stage_filter": "Knockout", "points_per_correct": 8},
+    {"id": "r16",            "label": "Tips Åttondelsfinal",  "order": 3, "round_filter": "åttondelsfinal",  "stage_filter": "Knockout", "points_per_correct": 6},
+    {"id": "qf",             "label": "Tips Kvartsfinal",     "order": 4, "round_filter": "kvartsfinal",     "stage_filter": "Knockout", "points_per_correct": 5},
+    {"id": "sf",             "label": "Tips Semifinal",       "order": 5, "round_filter": "semifinal",       "stage_filter": "Knockout", "points_per_correct": 4},
+    {"id": "third_place",    "label": "Tips Bronsmatch",      "order": 6, "round_filter": "bronsmatch",      "stage_filter": "Knockout", "points_per_correct": 3},
+    {"id": "final",          "label": "Tips Final",           "order": 7, "round_filter": "final",           "stage_filter": "Knockout", "points_per_correct": 5},
+]
+VERSION_BY_ID = {v["id"]: v for v in VERSION_DEFS}
+VALID_VERSION_IDS = [v["id"] for v in VERSION_DEFS]
+
+class StrategySubmitReq(BaseModel):
+    # For pre_tournament:
+    group_rankings: Dict[str, List[str]] = {}
+    advancing: List[str] = []
+    r32: List[str] = []
+    r16: List[str] = []
+    qf: List[str] = []
+    sf: List[str] = []
+    finalists: List[str] = []
+    champion: Optional[str] = None
+    # For knockout versions:
+    picks: Dict[str, str] = {}  # match_id -> team_id (winner)
+
+class StrategyOverrideReq(BaseModel):
+    status: Literal["auto", "open", "closed"] = "auto"
+    custom_deadline: Optional[datetime] = None
+
+async def matches_for_version(version_id: str) -> List[dict]:
+    vdef = VERSION_BY_ID.get(version_id)
+    if not vdef:
+        return []
+    if version_id == "pre_tournament":
+        ms = await db.matches.find({"stage": vdef["stage_filter"]}, {"_id": 0}).to_list(2000)
+    else:
+        rf = vdef["round_filter"]
+        ms = await db.matches.find(
+            {"stage": "Knockout", "round": {"$regex": f"^{rf}", "$options": "i"}},
+            {"_id": 0},
+        ).to_list(500)
+    ms.sort(key=lambda m: (m.get("kickoff") or "", m.get("match_number") or 0))
+    return ms
+
+async def compute_default_deadline(version_id: str) -> Optional[str]:
+    ms = await matches_for_version(version_id)
+    if not ms:
+        return None
+    kickoff_iso = ms[0]["kickoff"]
+    kickoff = datetime.fromisoformat(kickoff_iso)
+    if kickoff.tzinfo is None:
+        kickoff = kickoff.replace(tzinfo=timezone.utc)
+    return (kickoff - timedelta(minutes=5)).isoformat()
+
+async def get_version_state(version_id: str) -> dict:
+    """Return {deadline, locked, override} for a version."""
+    default_dl = await compute_default_deadline(version_id)
+    override = await db.config.find_one({"key": f"strategy_override_{version_id}"}, {"_id": 0}) or {}
+    status = override.get("status", "auto")
+    custom = override.get("custom_deadline")
+    effective_dl = custom or default_dl
+    if status == "open":
+        locked = False
+    elif status == "closed":
+        locked = True
+    else:
+        if effective_dl:
+            dl = datetime.fromisoformat(effective_dl)
+            if dl.tzinfo is None:
+                dl = dl.replace(tzinfo=timezone.utc)
+            locked = now_utc() >= dl
+        else:
+            locked = False
+    return {
+        "default_deadline": default_dl,
+        "deadline": effective_dl,
+        "override_status": status,
+        "locked": locked,
+    }
+
+@api.get("/strategy/versions")
+async def list_strategy_versions(user: dict = Depends(get_current_user)):
+    out = []
+    my_subs = {d["version"]: d for d in await db.tournament_predictions.find({"user_id": user["id"]}, {"_id": 0}).to_list(20)}
+    for v in VERSION_DEFS:
+        state = await get_version_state(v["id"])
+        ms = await matches_for_version(v["id"])
+        out.append({
+            **v,
+            **state,
+            "match_count": len(ms),
+            "my_submitted": v["id"] in my_subs,
+            "my_submission": my_subs.get(v["id"]),
+        })
+    return out
+
+@api.get("/strategy/version/{version_id}/matches")
+async def matches_for_strategy_version(version_id: str):
+    if version_id not in VALID_VERSION_IDS:
+        raise HTTPException(404, "Okänd version")
+    ms = await matches_for_version(version_id)
+    return await _attach_teams_to_matches(ms)
+
+@api.post("/strategy/version/{version_id}")
+async def submit_strategy_version(version_id: str, req: StrategySubmitReq, user: dict = Depends(get_current_user)):
+    if version_id not in VALID_VERSION_IDS:
+        raise HTTPException(404, "Okänd version")
+    state = await get_version_state(version_id)
+    if state["locked"]:
+        raise HTTPException(400, "Tippning stängd")
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "version": version_id,
+        "submitted_at": now_utc().isoformat(),
+    }
+
+    if version_id == "pre_tournament":
+        # Reuse old pre-tournament shape with full validation
+        teams_in_groups: Dict[str, set] = {}
+        teams = await db.teams.find({}, {"_id": 0, "id": 1, "group": 1}).to_list(200)
+        for t in teams:
+            teams_in_groups.setdefault(t["group"], set()).add(t["id"])
+        if req.group_rankings:
+            for g, ids in req.group_rankings.items():
+                if g not in teams_in_groups:
+                    raise HTTPException(400, f"Okänd grupp: {g}")
+                if len(ids) != 4:
+                    raise HTTPException(400, f"Grupp {g}: exakt 4 lag måste rankas (1:a–4:e)")
+                if any(not x for x in ids):
+                    raise HTTPException(400, f"Grupp {g}: alla fyra platser måste fyllas i")
+                if len(set(ids)) != 4:
+                    raise HTTPException(400, f"Grupp {g}: varje lag får bara väljas en gång")
+                for tid in ids:
+                    if tid not in teams_in_groups[g]:
+                        raise HTTPException(400, f"Grupp {g}: ett av lagen tillhör inte gruppen")
+        doc.update({
+            "group_rankings": req.group_rankings,
+            "advancing": req.advancing, "r32": req.r32, "r16": req.r16, "qf": req.qf,
+            "sf": req.sf, "finalists": req.finalists, "champion": req.champion,
+        })
+    else:
+        # Knockout winner picks: validate each match belongs to this version's stage
+        valid_match_ids = {m["id"] for m in await matches_for_version(version_id)}
+        match_team_map: Dict[str, set] = {}
+        for m in await matches_for_version(version_id):
+            allowed = {m.get("home_team_id"), m.get("away_team_id")} - {None}
+            match_team_map[m["id"]] = allowed
+        cleaned: Dict[str, str] = {}
+        for mid, tid in (req.picks or {}).items():
+            if mid not in valid_match_ids:
+                raise HTTPException(400, f"Match {mid} ingår inte i denna version")
+            if not tid:
+                continue
+            allowed = match_team_map.get(mid, set())
+            if allowed and tid not in allowed:
+                raise HTTPException(400, "Vinnaren måste vara ett av matchens lag")
+            cleaned[mid] = tid
+        doc["picks"] = cleaned
+
+    await db.tournament_predictions.update_one(
+        {"user_id": user["id"], "version": version_id},
+        {"$set": doc}, upsert=True,
+    )
+    return doc
+
+@api.get("/strategy/version/{version_id}/predictions")
+async def visible_strategy_predictions(version_id: str, user: dict = Depends(get_current_user)):
+    if version_id not in VALID_VERSION_IDS:
+        raise HTTPException(404, "Okänd version")
+    state = await get_version_state(version_id)
+    if not state["locked"] and user.get("role") != "admin":
+        return {"locked": True, "predictions": []}
+    docs = await db.tournament_predictions.find({"version": version_id}, {"_id": 0}).to_list(2000)
+    users = await db.users.find({"id": {"$in": [d["user_id"] for d in docs]}}, {"_id": 0, "name": 1, "id": 1}).to_list(2000)
+    umap = {u["id"]: u for u in users}
+    for d in docs:
+        d["user_name"] = umap.get(d["user_id"], {}).get("name", "Spelare")
+    return {"locked": False, "predictions": docs}
+
+@api.post("/admin/strategy/version/{version_id}/override")
+async def admin_strategy_override(version_id: str, req: StrategyOverrideReq, admin: dict = Depends(require_admin)):
+    if version_id not in VALID_VERSION_IDS:
+        raise HTTPException(404, "Okänd version")
+    key = f"strategy_override_{version_id}"
+    prev = await db.config.find_one({"key": key}, {"_id": 0}) or {}
+    custom = req.custom_deadline.isoformat() if isinstance(req.custom_deadline, datetime) else req.custom_deadline
+    await db.config.update_one(
+        {"key": key},
+        {"$set": {"key": key, "status": req.status, "custom_deadline": custom}},
+        upsert=True,
+    )
+    await log_audit(admin, "strategy_version_override", {
+        "version_id": version_id,
+        "old_value": {"status": prev.get("status"), "custom_deadline": prev.get("custom_deadline")},
+        "new_value": {"status": req.status, "custom_deadline": custom},
+    })
+    return {"ok": True}
+
+@api.post("/admin/strategy/recompute")
+async def admin_strategy_recompute(admin: dict = Depends(require_admin)):
+    await recompute_strategy_points()
+    await log_audit(admin, "strategy_recompute")
+    return {"ok": True}
+
 # ============== Scoring ==============
 def score_match(pred_h, pred_a, actual_h, actual_a) -> int:
     if actual_h is None or actual_a is None:
@@ -609,36 +819,59 @@ async def recompute_strategy_points():
 
     # Score each user's tournament predictions
     tps = await db.tournament_predictions.find({}, {"_id": 0}).to_list(2000)
+    # Pre-compute actual winner per finished knockout match (by match_id)
+    actual_winner_by_match: Dict[str, str] = {}
+    for m in matches:
+        if m.get("stage") == "Knockout" and m.get("status") == "finished":
+            hs, as_ = m.get("home_score"), m.get("away_score")
+            if hs is None or as_ is None:
+                continue
+            if hs > as_:
+                actual_winner_by_match[m["id"]] = m.get("home_team_id")
+            elif as_ > hs:
+                actual_winner_by_match[m["id"]] = m.get("away_team_id")
     user_strategy: Dict[str, float] = defaultdict(float)
     for tp in tps:
-        mult = VERSION_MULT.get(tp.get("version", 1), 1.0)
+        version_id = tp.get("version", "pre_tournament")
+        # Backward compat: legacy V1/V2/V3/V4 integer ids -> pre_tournament-like scoring (no longer used by new UI)
+        if isinstance(version_id, int) or (isinstance(version_id, str) and version_id.isdigit()):
+            version_id = "pre_tournament"
         pts = 0
-        # Group rankings: 1st correct = +5; teams in advancing (top 2 or best third) = +3 each
-        for g, ranking in (tp.get("group_rankings") or {}).items():
-            if ranking and len(ranking) >= 1 and ranking[0] == actual_group_winners.get(g):
-                pts += STRATEGY_POINTS["group_winner"]
-            for tid in (ranking[:2] if ranking else []):
-                if tid and tid in actual_advancing:
-                    pts += STRATEGY_POINTS["advancing"]
-        # Bracket picks
-        for tid in (tp.get("r32") or []):
-            if tid in stage_teams["r32"]:
-                pts += STRATEGY_POINTS["r32"]
-        for tid in (tp.get("r16") or []):
-            if tid in stage_teams["r16"]:
-                pts += STRATEGY_POINTS["r16"]
-        for tid in (tp.get("qf") or []):
-            if tid in stage_teams["qf"]:
-                pts += STRATEGY_POINTS["qf"]
-        for tid in (tp.get("sf") or []):
-            if tid in stage_teams["sf"]:
-                pts += STRATEGY_POINTS["sf"]
-        for tid in (tp.get("finalists") or []):
-            if tid in finals_teams:
-                pts += STRATEGY_POINTS["finalist"]
-        if tp.get("champion") and champion_id and tp["champion"] == champion_id:
-            pts += STRATEGY_POINTS["champion"]
-        user_strategy[tp["user_id"]] += pts * mult
+        if version_id == "pre_tournament":
+            # Group rankings: 1st correct = +5; teams in advancing (top 2) = +3 each
+            for g, ranking in (tp.get("group_rankings") or {}).items():
+                if ranking and len(ranking) >= 1 and ranking[0] == actual_group_winners.get(g):
+                    pts += STRATEGY_POINTS["group_winner"]
+                for tid in (ranking[:2] if ranking else []):
+                    if tid and tid in actual_advancing:
+                        pts += STRATEGY_POINTS["advancing"]
+            # Bracket lists
+            for tid in (tp.get("r32") or []):
+                if tid in stage_teams["r32"]:
+                    pts += STRATEGY_POINTS["r32"]
+            for tid in (tp.get("r16") or []):
+                if tid in stage_teams["r16"]:
+                    pts += STRATEGY_POINTS["r16"]
+            for tid in (tp.get("qf") or []):
+                if tid in stage_teams["qf"]:
+                    pts += STRATEGY_POINTS["qf"]
+            for tid in (tp.get("sf") or []):
+                if tid in stage_teams["sf"]:
+                    pts += STRATEGY_POINTS["sf"]
+            for tid in (tp.get("finalists") or []):
+                if tid in finals_teams:
+                    pts += STRATEGY_POINTS["finalist"]
+            if tp.get("champion") and champion_id and tp["champion"] == champion_id:
+                pts += STRATEGY_POINTS["champion"]
+        else:
+            # Knockout-stage winner picks
+            vdef = VERSION_BY_ID.get(version_id)
+            ppc = (vdef or {}).get("points_per_correct") or 0
+            for mid, picked_tid in (tp.get("picks") or {}).items():
+                actual = actual_winner_by_match.get(mid)
+                if actual and picked_tid == actual:
+                    pts += ppc
+        user_strategy[tp["user_id"]] += pts
 
     all_users = await db.users.find({}, {"id": 1, "_id": 0}).to_list(2000)
     for u in all_users:
