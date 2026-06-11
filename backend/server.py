@@ -587,7 +587,9 @@ async def get_version_state(version_id: str) -> dict:
     status = override.get("status", "auto")
     custom = override.get("custom_deadline")
     effective_dl = custom or default_dl
-    if status == "open":
+    if version_id == "pre_tournament" and status != "closed":
+        locked = False
+    elif status == "open":
         locked = False
     elif status == "closed":
         locked = True
@@ -1500,8 +1502,7 @@ app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
-    allow_origin_regex=".*",
+    allow_origins=["http://localhost:3000","http://192.168.0.104:3000",],
     allow_methods=["*"],
     allow_headers=["*"],
 )
