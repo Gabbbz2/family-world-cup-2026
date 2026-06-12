@@ -172,6 +172,7 @@ export default function Matches() {
   const [stageFilter, setStageFilter] = useState("all");
   const [groupFilter, setGroupFilter] = useState("all");
   const [channelFilter, setChannelFilter] = useState("all");
+  const [countryFilter, setCountryFilter] = useState("all");
   const [swedenOnly, setSwedenOnly] = useState(false);
 
   const load = async () => {
@@ -190,6 +191,19 @@ export default function Matches() {
 
   const groupOptions = Array.from(new Set(matches.map((m) => m.group).filter(Boolean))).sort();
   const channelOptions = Array.from(new Set(matches.map((m) => m.tv_channel).filter(Boolean))).sort();
+  const countryOptions = Array.from(new Set(matches.flatMap((m) => {
+    const options = [];
+    const addName = (name) => {
+      if (!name) return;
+      if (/\d/.test(name)) return; // Exclude placeholder codes like 1A until real team is selected
+      options.push(name);
+    };
+    addName(m.home_team?.team_name);
+    addName(m.away_team?.team_name);
+    addName(m.home_placeholder);
+    addName(m.away_placeholder);
+    return options;
+  })).values()).sort();
 
   const filtered = matches.filter((m) => {
     if (filter === "upcoming" && m.status === "finished") return false;
@@ -200,6 +214,11 @@ export default function Matches() {
     }
     if (groupFilter !== "all" && m.group !== groupFilter) return false;
     if (channelFilter !== "all" && m.tv_channel !== channelFilter) return false;
+    if (countryFilter !== "all") {
+      const home = (m.home_team?.team_name || m.home_placeholder || "");
+      const away = (m.away_team?.team_name || m.away_placeholder || "");
+      if (home !== countryFilter && away !== countryFilter) return false;
+    }
     if (swedenOnly) {
       const home = (m.home_team?.team_name || "").toLowerCase();
       const away = (m.away_team?.team_name || "").toLowerCase();
@@ -245,6 +264,11 @@ export default function Matches() {
           className="bg-[#0A0A0A] border border-white/10 text-sm text-white px-3 py-2 min-w-[180px]">
           <option value="all">Alla kanaler</option>
           {channelOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select value={countryFilter} onChange={(e) => setCountryFilter(e.target.value)}
+          className="bg-[#0A0A0A] border border-white/10 text-sm text-white px-3 py-2 min-w-[180px]">
+          <option value="all">Alla länder</option>
+          {countryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <button data-testid="filter-sweden" onClick={() => setSwedenOnly((v) => !v)}
           className={`px-3 py-1.5 text-xs uppercase tracking-widest font-bold border transition-all ${
