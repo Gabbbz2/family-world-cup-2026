@@ -151,7 +151,7 @@ export default function Dashboard() {
         <div className="surface">
           <div className="grid grid-cols-12 gap-2 px-3 py-2 label-eyebrow border-b border-white/10">
             <div className="col-span-1">#</div><div className="col-span-5">Spelare</div>
-            <div className="col-span-2 text-right">Live</div><div className="col-span-2 text-right">Strat</div><div className="col-span-2 text-right">Totalt</div>
+            <div className="col-span-2 text-right">Live</div><div className="col-span-2 text-right">Strategi</div><div className="col-span-2 text-right">Totalt</div>
           </div>
           {board.slice(0, 5).map((r) => (
             <div key={r.user_id} data-testid={`dash-board-row-${r.user_id}`}

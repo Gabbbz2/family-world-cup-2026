@@ -68,7 +68,7 @@ export default function Leaderboard() {
           <div className="col-span-1">#</div>
           <div className="col-span-5">Spelare</div>
           <div className="col-span-2 text-right">Live</div>
-          <div className="col-span-2 text-right">Strat</div>
+          <div className="col-span-2 text-right">Strategi</div>
           <div className="col-span-2 text-right">Totalt</div>
         </div>
         {sorted.map((r, idx) => (
