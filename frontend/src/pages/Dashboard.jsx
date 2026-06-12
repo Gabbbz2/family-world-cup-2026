@@ -29,7 +29,7 @@ export default function Dashboard() {
 
   const upcoming = matches.filter((m) => m.status !== "finished" && m.home_team && m.away_team).slice(0, 5);
   const myRow = board.find((r) => r.user_id === user.id);
-  const groupKeys = Object.keys(standings).sort().slice(0, 4);
+  const groupKeys = Object.keys(standings).sort((a, b) => a.localeCompare(b, "sv", { numeric: true }));
 
   return (
     <div className="space-y-6">
@@ -65,6 +65,44 @@ export default function Dashboard() {
           <span>Hall of Fame</span>
           <CaretRight size={14} weight="bold" />
         </Link>
+      </section>
+
+      {/* Leaderboard preview */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-display font-bold text-xl flex items-center gap-2">
+            <Trophy size={20} weight="fill" className="text-[#39FF14]" /> Topplista
+          </h2>
+          <Link to="/leaderboard" data-testid="cta-leaderboard" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">Hela listan</Link>
+        </div>
+        <div className="surface">
+          <div className="grid grid-cols-12 gap-2 px-3 py-2 label-eyebrow border-b border-white/10">
+            <div className="col-span-1 text-[10px] sm:text-xs">#</div>
+            <div className="col-span-5 text-[10px] sm:text-xs">Spelare</div>
+            <div className="col-span-2 text-right text-[10px] sm:text-xs">
+              <span className="hidden sm:inline">Live</span>
+              <span className="sm:hidden">L</span>
+            </div>
+            <div className="col-span-2 text-right text-[10px] sm:text-xs">
+              <span className="hidden sm:inline">Strategi</span>
+              <span className="sm:hidden">Str</span>
+            </div>
+            <div className="col-span-2 text-right text-[10px] sm:text-xs">
+              <span className="hidden sm:inline">Totalt</span>
+              <span className="sm:hidden">Tot</span>
+            </div>
+          </div>
+          {board.slice(0, 5).map((r) => (
+            <div key={r.user_id} data-testid={`dash-board-row-${r.user_id}`}
+              className={`grid grid-cols-12 gap-2 px-3 py-3 border-b border-white/5 text-sm ${r.user_id === user.id ? "bg-[#00F0FF]/5" : ""}`}>
+              <div className="col-span-1 font-display font-black">{r.rank}</div>
+              <div className="col-span-5 truncate">{r.name}</div>
+              <div className="col-span-2 text-right font-mono">{r.live_points}</div>
+              <div className="col-span-2 text-right font-mono">{r.strategy_points}</div>
+              <div className="col-span-2 text-right font-mono font-bold text-[#39FF14]">{r.total_points}</div>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* Upcoming */}
@@ -108,28 +146,42 @@ export default function Dashboard() {
             {groupKeys.map((g) => (
               <div key={g} className="surface p-3" data-testid={`dash-standings-${g}`}>
                 <div className="label-eyebrow mb-2">Grupp {g}</div>
-                <table className="w-full text-xs">
+                <table className="w-full text-xs table-fixed">
+                  <colgroup>
+                    <col style={{ width: "auto", minWidth: "12rem" }} />
+                    <col style={{ width: "2.75rem" }} />
+                    <col style={{ width: "2.75rem" }} />
+                    <col style={{ width: "2.75rem" }} />
+                    <col style={{ width: "2.75rem" }} />
+                    <col style={{ width: "3rem" }} />
+                    <col style={{ width: "2.75rem" }} />
+                  </colgroup>
                   <thead className="text-zinc-500">
                     <tr>
-                      <th className="text-left">Lag</th>
-                      <th>S</th><th>V</th><th>O</th><th>F</th><th>MS</th><th>P</th>
+                      <th className="text-left py-2">Lag</th>
+                      <th className="text-center py-2">S</th>
+                      <th className="text-center py-2">V</th>
+                      <th className="text-center py-2">O</th>
+                      <th className="text-center py-2">F</th>
+                      <th className="text-center py-2">MS</th>
+                      <th className="text-center py-2">P</th>
                     </tr>
                   </thead>
                   <tbody>
                     {standings[g].map((r, idx) => (
                       <tr key={r.team_id} className={idx < 2 ? "text-white" : "text-zinc-400"}>
-                        <td className="text-left py-1">
-                          <span className="inline-flex items-center gap-1.5">
+                        <td className="text-left py-2 pr-2">
+                          <div className="inline-flex items-center gap-1.5 min-w-0">
                             <Flag code={r.country_code} size={14} />
                             <span className="truncate">{r.team_name}</span>
-                          </span>
+                          </div>
                         </td>
-                        <td className="text-center font-mono">{r.played}</td>
-                        <td className="text-center font-mono">{r.won}</td>
-                        <td className="text-center font-mono">{r.drawn}</td>
-                        <td className="text-center font-mono">{r.lost}</td>
-                        <td className="text-center font-mono">{r.goal_diff > 0 ? `+${r.goal_diff}` : r.goal_diff}</td>
-                        <td className="text-center font-mono font-bold text-[#39FF14]">{r.points}</td>
+                        <td className="text-center font-mono py-2">{r.played}</td>
+                        <td className="text-center font-mono py-2">{r.won}</td>
+                        <td className="text-center font-mono py-2">{r.drawn}</td>
+                        <td className="text-center font-mono py-2">{r.lost}</td>
+                        <td className="text-center font-mono py-2">{r.goal_diff > 0 ? `+${r.goal_diff}` : r.goal_diff}</td>
+                        <td className="text-center font-mono font-bold text-[#39FF14] py-2">{r.points}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -139,32 +191,6 @@ export default function Dashboard() {
           </div>
         </section>
       )}
-
-      {/* Leaderboard preview */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-display font-bold text-xl flex items-center gap-2">
-            <Trophy size={20} weight="fill" className="text-[#39FF14]" /> Topplista
-          </h2>
-          <Link to="/leaderboard" data-testid="cta-leaderboard" className="text-xs uppercase tracking-widest text-[#00F0FF] hover:underline">Hela listan</Link>
-        </div>
-        <div className="surface">
-          <div className="grid grid-cols-12 gap-2 px-3 py-2 label-eyebrow border-b border-white/10">
-            <div className="col-span-1">#</div><div className="col-span-5">Spelare</div>
-            <div className="col-span-2 text-right">Live</div><div className="col-span-2 text-right">Strategi</div><div className="col-span-2 text-right">Totalt</div>
-          </div>
-          {board.slice(0, 5).map((r) => (
-            <div key={r.user_id} data-testid={`dash-board-row-${r.user_id}`}
-              className={`grid grid-cols-12 gap-2 px-3 py-3 border-b border-white/5 text-sm ${r.user_id === user.id ? "bg-[#00F0FF]/5" : ""}`}>
-              <div className="col-span-1 font-display font-black">{r.rank}</div>
-              <div className="col-span-5 truncate">{r.name}</div>
-              <div className="col-span-2 text-right font-mono">{r.live_points}</div>
-              <div className="col-span-2 text-right font-mono">{r.strategy_points}</div>
-              <div className="col-span-2 text-right font-mono font-bold text-[#39FF14]">{r.total_points}</div>
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
