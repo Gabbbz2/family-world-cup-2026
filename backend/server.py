@@ -1502,7 +1502,12 @@ app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["http://localhost:3000","http://192.168.0.104:3000",],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://192.168.0.104:3000",
+        "https://bengtssonfamilj.se",
+        "https://www.bengtssonfamilj.se",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
