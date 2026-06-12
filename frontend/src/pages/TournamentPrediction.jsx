@@ -141,6 +141,14 @@ function DynamicBracketEditor({ afterStage, allTeams, tmap, pred, setPred, locke
   };
   const afterLabel = stageLabels[afterStage] || afterStage;
 
+  const handleBracketKeyboard = (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const node = e.currentTarget;
+      node.scrollBy({ left: e.key === "ArrowLeft" ? -220 : 220, behavior: "smooth" });
+      e.preventDefault();
+    }
+  };
+
   return (
     <>
       <section>
@@ -151,7 +159,12 @@ function DynamicBracketEditor({ afterStage, allTeams, tmap, pred, setPred, locke
         </p>
       </section>
 
-      <div className="overflow-x-auto no-scrollbar">
+      <div
+        className="overflow-x-auto no-scrollbar"
+        style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x" }}
+        tabIndex={0}
+        onKeyDown={handleBracketKeyboard}
+      >
         <div style={{ display: 'grid', gridTemplateColumns: `repeat(${visibleStages.length}, minmax(200px, 1fr))`, gap: '12px', minWidth: `${visibleStages.length * 220}px` }}>
           {visibleStages.map((stage) => {
             const teamsForStage = stage.key === "champion"
@@ -214,7 +227,18 @@ function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) 
       <section>
         <h2 className="font-display font-bold text-xl mb-3">Slutspelsträd</h2>
         <p className="text-zinc-500 text-xs mb-3">Välj lagen som går vidare i varje omgång. Tryck för att markera.</p>
-        <div className="overflow-x-auto no-scrollbar" style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x" }}>
+        <div
+          className="overflow-x-auto no-scrollbar"
+          style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x" }}
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+              const node = e.currentTarget;
+              node.scrollBy({ left: e.key === "ArrowLeft" ? -220 : 220, behavior: "smooth" });
+              e.preventDefault();
+            }
+          }}
+        >
           <div className="inline-flex gap-3 min-w-max">
             {[
               { key: "advancing", label: "Vidare från grupp", color: "#A1A1AA", limit: 32 },
