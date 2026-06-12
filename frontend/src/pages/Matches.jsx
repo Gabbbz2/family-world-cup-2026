@@ -170,6 +170,9 @@ export default function Matches() {
   const [myPreds, setMyPreds] = useState({});
   const [filter, setFilter] = useState("upcoming");
   const [stageFilter, setStageFilter] = useState("all");
+  const [groupFilter, setGroupFilter] = useState("all");
+  const [channelFilter, setChannelFilter] = useState("all");
+  const [swedenOnly, setSwedenOnly] = useState(false);
 
   const load = async () => {
     const [m, p] = await Promise.all([api.get("/matches"), api.get("/predictions/me")]);
@@ -185,12 +188,22 @@ export default function Matches() {
     setMyPreds((prev) => ({ ...prev, [match_id]: data }));
   };
 
+  const groupOptions = Array.from(new Set(matches.map((m) => m.group).filter(Boolean))).sort();
+  const channelOptions = Array.from(new Set(matches.map((m) => m.tv_channel).filter(Boolean))).sort();
+
   const filtered = matches.filter((m) => {
     if (filter === "upcoming" && m.status === "finished") return false;
     if (filter === "finished" && m.status !== "finished") return false;
     if (stageFilter !== "all") {
       if (stageFilter === "group" && m.stage !== "Group Stage") return false;
       if (stageFilter === "knockout" && m.stage !== "Knockout") return false;
+    }
+    if (groupFilter !== "all" && m.group !== groupFilter) return false;
+    if (channelFilter !== "all" && m.tv_channel !== channelFilter) return false;
+    if (swedenOnly) {
+      const home = (m.home_team?.team_name || "").toLowerCase();
+      const away = (m.away_team?.team_name || "").toLowerCase();
+      if (!home.includes("sverige") && !away.includes("sverige")) return false;
     }
     return true;
   });
@@ -220,6 +233,25 @@ export default function Matches() {
               stageFilter === s ? "bg-[#39FF14] text-black border-[#39FF14]" : "border-white/10 text-zinc-400 hover:text-white"
             }`}>{stageLabels[s]}</button>
         ))}
+      </div>
+
+      <div className="flex gap-2 flex-wrap items-center">
+        <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)}
+          className="bg-[#0A0A0A] border border-white/10 text-sm text-white px-3 py-2 min-w-[180px]">
+          <option value="all">Alla grupper</option>
+          {groupOptions.map((g) => <option key={g} value={g}>{`Grupp ${g}`}</option>)}
+        </select>
+        <select value={channelFilter} onChange={(e) => setChannelFilter(e.target.value)}
+          className="bg-[#0A0A0A] border border-white/10 text-sm text-white px-3 py-2 min-w-[180px]">
+          <option value="all">Alla kanaler</option>
+          {channelOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <button data-testid="filter-sweden" onClick={() => setSwedenOnly((v) => !v)}
+          className={`px-3 py-1.5 text-xs uppercase tracking-widest font-bold border transition-all ${
+            swedenOnly ? "bg-[#FFCC00] text-black border-[#FFCC00]" : "border-white/10 text-zinc-400 hover:text-white"
+          }`}>
+          {swedenOnly ? "Endast Sverige" : "Visa Sverige"}
+        </button>
       </div>
 
       <div className="space-y-3">
