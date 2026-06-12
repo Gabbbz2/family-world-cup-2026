@@ -50,9 +50,10 @@ function GroupRankingBox({ group, teams, ranking, onChange, disabled }) {
 }
 
 function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit, disabled }) {
+  const sortedTeams = [...teams].sort((a, b) => a.team_name?.localeCompare(b.team_name, "sv") || 0);
   return (
     <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
-      {teams.map((t) => {
+      {sortedTeams.map((t) => {
         const isSel = selected.includes(t.id);
         const disabledNow = disabled || (!isSel && limit && selected.length >= limit);
         return (
@@ -61,14 +62,14 @@ function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit, disable
             data-testid={`${testidPrefix}-${t.id}`}
             onClick={() => onToggle(t.id)}
             disabled={disabledNow}
-            className={`w-full flex items-center gap-2 px-2 py-2 border transition-all text-left ${
+            className={`w-full min-w-[220px] flex items-center gap-2 px-3 py-2 border transition-all text-left ${
               isSel ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
                 : disabledNow ? "border-white/5 text-zinc-700 cursor-not-allowed"
                 : "border-white/10 text-zinc-300 hover:border-white/30"
             }`}
           >
             <Flag code={t.country_code} size={20} />
-            <span className="text-sm font-semibold truncate">{t.team_name}</span>
+            <span className="text-sm font-semibold whitespace-normal">{t.team_name}</span>
           </button>
         );
       })}
@@ -99,6 +100,9 @@ function DynamicBracketEditor({ afterStage, allTeams, tmap, pred, setPred, locke
 
   const toggleList = (key, teamId) =>
     setPred((p) => {
+      if (key === "champion") {
+        return { ...p, champion: p.champion === teamId ? "" : teamId };
+      }
       const arr = p[key].includes(teamId) ? p[key].filter((x) => x !== teamId) : [...p[key], teamId];
       return { ...p, [key]: arr };
     });
@@ -113,41 +117,61 @@ function DynamicBracketEditor({ afterStage, allTeams, tmap, pred, setPred, locke
     { key: "sf", label: "Semifinal", color: "#FFCC00", limit: 4 },
     { key: "third_place", label: "Bronsmatch", color: "#FF8A3D", limit: 2 },
     { key: "final", label: "Final", color: "#FF3B30", limit: 2 },
+    { key: "champion", label: "Mästare", color: "#FFFFFF", limit: 1 },
   ];
 
-  // Filter to stages that have remaining teams
-  const visibleStages = stageMap.filter(s => remainingTeams[s.key]);
+  // Filter to stages that have remaining teams; always include champion when the final is present.
+  const visibleStages = stageMap.filter((s) => {
+    if (s.key === "champion") {
+      return Boolean(remainingTeams.final?.length || remainingTeams.champion?.length);
+    }
+    return Boolean(remainingTeams[s.key]?.length);
+  });
   if (visibleStages.length === 0) {
     return <div className="surface p-6 text-center text-zinc-500">Ingen data tillgänglig ännu. Vänta på att omgången slutförs.</div>;
   }
+
+  const stageLabels = {
+    group: "gruppspel",
+    r32: "sextondelsfinal",
+    r16: "åttondelsfinal",
+    qf: "kvartsfinal",
+    sf: "semifinal",
+    third_place: "bronsmatch",
+  };
+  const afterLabel = stageLabels[afterStage] || afterStage;
 
   return (
     <>
       <section>
         <h2 className="font-display font-bold text-xl mb-3">Återstående slutspelsträd</h2>
+        <div className="text-[10px] uppercase tracking-widest text-zinc-500 mb-2">Efter {afterLabel}</div>
         <p className="text-zinc-500 text-xs mb-3">
-          Endast lag som fortfarande är i turneringen visas. Återstarta tippning för varje omgång.
+          Endast lag som fortfarande är i turneringen visas för de kommande omgångarna.
         </p>
       </section>
 
       <div className="overflow-x-auto no-scrollbar">
         <div style={{ display: 'grid', gridTemplateColumns: `repeat(${visibleStages.length}, minmax(200px, 1fr))`, gap: '12px', minWidth: `${visibleStages.length * 220}px` }}>
           {visibleStages.map((stage) => {
-            const teamsForStage = remainingTeams[stage.key] || [];
-            const selectedTeams = allTeams.filter(t => teamsForStage.includes(t.id));
+            const teamsForStage = stage.key === "champion"
+              ? (remainingTeams.champion?.length ? remainingTeams.champion : remainingTeams.final || [])
+              : remainingTeams[stage.key] || [];
+            const selectedTeams = allTeams.filter((t) => teamsForStage.includes(t.id));
+            const selected = stage.key === "champion" ? (pred.champion ? [pred.champion] : []) : (pred[stage.key] || []);
             return (
               <div key={stage.key} className="surface p-3" data-testid={`dynamic-stage-${stage.key}`}>
                 <div className="label-eyebrow mb-2" style={{ color: stage.color }}>{stage.label}</div>
                 <TeamMultiPick
                   teams={selectedTeams}
-                  selected={pred[stage.key] || []}
+                  selected={selected}
                   onToggle={(id) => toggleList(stage.key, id)}
                   testidPrefix={`dynamic-${stage.key}`}
                   limit={stage.limit}
                   disabled={locked}
                 />
                 <div className="mt-2 text-[10px] text-zinc-500">
-                  Valda: {(pred[stage.key] || []).length} / {stage.limit}
+                  Valda: {stage.key === "champion" ? (pred.champion ? 1 : 0) : selected.length} / {stage.limit}
                 </div>
               </div>
             );
@@ -190,8 +214,8 @@ function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) 
       <section>
         <h2 className="font-display font-bold text-xl mb-3">Slutspelsträd</h2>
         <p className="text-zinc-500 text-xs mb-3">Välj lagen som går vidare i varje omgång. Tryck för att markera.</p>
-        <div className="overflow-x-auto no-scrollbar">
-          <div className="grid grid-cols-7 gap-3 min-w-[1050px]">
+        <div className="overflow-x-auto no-scrollbar" style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x" }}>
+          <div className="inline-flex gap-3 min-w-max">
             {[
               { key: "advancing", label: "Vidare från grupp", color: "#A1A1AA", limit: 32 },
               { key: "r16", label: "Åttondelsfinal", color: "#00F0FF", limit: 16 },
@@ -201,7 +225,7 @@ function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) 
               { key: "finalists", label: "Finalister", color: "#FF3B30", limit: 2 },
               { key: "champion", label: "Mästare", color: "#FFFFFF" },
             ].map((stage) => (
-              <div key={stage.key} className="surface p-3" data-testid={`stage-${stage.key}`}>
+              <div key={stage.key} className="surface p-3 min-w-[250px] sm:min-w-[280px] shrink-0" data-testid={`stage-${stage.key}`}>
                 <div className="label-eyebrow mb-2" style={{ color: stage.color }}>{stage.label}</div>
                 {stage.key === "champion" ? (
                   <div>
@@ -213,7 +237,7 @@ function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) 
                       className="w-full bg-[#0A0A0A] border border-white/10 px-2 py-2 text-sm text-white focus:border-[#00F0FF] outline-none disabled:opacity-50"
                     >
                       <option value="">Välj mästare</option>
-                      {allTeams.map((t) => <option key={t.id} value={t.id}>{t.team_name}</option>)}
+                      {[...allTeams].sort((a, b) => a.team_name?.localeCompare(b.team_name, "sv") || 0).map((t) => <option key={t.id} value={t.id}>{t.team_name}</option>)}
                     </select>
                     {pred.champion && tmap[pred.champion] && (
                       <div className="mt-3 p-3 border border-[#00F0FF] bg-[#00F0FF]/10 flex items-center gap-2">
@@ -313,8 +337,6 @@ export default function TournamentPrediction() {
   const [picks, setPicks] = useState({});
   const [saved, setSaved] = useState("");
   const [err, setErr] = useState("");
-  const [bracketMode, setBracketMode] = useState("pre_tournament"); // "pre_tournament" or "dynamic"
-  const [afterStage, setAfterStage] = useState("sf"); // stage completed for dynamic bracket
 
   const allTeams = useMemo(() => Object.values(groups).flat(), [groups]);
   const tmap = useMemo(() => {
@@ -389,7 +411,7 @@ export default function TournamentPrediction() {
           <button
             key={v.id}
             data-testid={`version-${v.id}`}
-            onClick={() => { setActiveId(v.id); setBracketMode("pre_tournament"); }}
+            onClick={() => setActiveId(v.id)}
             className={`p-3 border text-left transition-all ${
               activeId === v.id ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
             }`}
@@ -408,84 +430,6 @@ export default function TournamentPrediction() {
         ))}
       </div>
 
-      {/* Dynamic bracket mode selector (only show when pre_tournament is being edited) */}
-      {activeId === "pre_tournament" && (
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-zinc-400 uppercase tracking-widest">Bracket-läge</div>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => setBracketMode("pre_tournament")}
-              className={`p-3 border text-left transition-all ${
-                bracketMode === "pre_tournament" ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
-              }`}
-            >
-              <div className="font-semibold text-sm">Första Tipset</div>
-              <div className="text-[10px] text-zinc-500 mt-1">Sätt hela bracket innan slutspelet</div>
-            </button>
-            <button
-              onClick={() => setBracketMode("dynamic")}
-              className={`p-3 border text-left transition-all ${
-                bracketMode === "dynamic" ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
-              }`}
-            >
-              <div className="font-semibold text-sm">Dynamisk Bracket</div>
-              <div className="text-[10px] text-zinc-500 mt-1">Uppdatera efter varje omgång</div>
-            </button>
-          </div>
-
-          {/* Stage selector for dynamic bracket */}
-          {bracketMode === "dynamic" && (
-            <div className="space-y-2 mt-3">
-              <div className="text-xs font-semibold text-zinc-400 uppercase tracking-widest">Omgång slutförd</div>
-              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                {[
-                  { val: "group", label: "Gruppspel" },
-                  { val: "r16", label: "Åttondelsfinal" },
-                  { val: "qf", label: "Kvartsfinal" },
-                  { val: "sf", label: "Semifinal" },
-                ].map((s) => (
-                  <button
-                    key={s.val}
-                    onClick={() => setAfterStage(s.val)}
-                    className={`p-2 border text-center text-xs transition-all ${
-                      afterStage === s.val ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white" : "border-white/10 text-zinc-400 hover:border-white/30"
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Version selector - only show when not in pre_tournament or when in regular knockout versions */}
-      {activeId !== "pre_tournament" && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {versions.filter(v => v.id !== "pre_tournament").map((v) => (
-            <button
-              key={v.id}
-              data-testid={`version-${v.id}`}
-              onClick={() => setActiveId(v.id)}
-              className={`p-3 border text-left transition-all ${
-                activeId === v.id ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
-              }`}
-            >
-              <div className="label-eyebrow" style={{ color: v.locked ? "#A1A1AA" : "#39FF14" }}>{v.label}</div>
-              <div className="text-[10px] text-zinc-500 mt-1">
-                {v.match_count} matcher
-                {v.points_per_correct ? ` · ${v.points_per_correct} p/rätt` : ""}
-              </div>
-              <div className="text-[10px] uppercase tracking-widest mt-2">
-                {v.locked ? <span className="text-zinc-500">Stängd</span> :
-                  v.my_submitted ? <span className="text-[#39FF14]">Sparad</span> :
-                  <span className="text-[#FFCC00]">Öppen</span>}
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
 
       {/* Active version banner - only show for knockout versions */}
       {active && activeId !== "pre_tournament" && (
@@ -509,11 +453,7 @@ export default function TournamentPrediction() {
       <div className="surface p-3 text-xs text-zinc-400 flex items-center gap-2">
         <Lightning size={16} className="text-[#00F0FF]" weight="fill" />
         {activeId === "pre_tournament" ? (
-          bracketMode === "dynamic" ? (
-            <>Dynamisk Bracket · Uppdatera efter varje omgång · Endast kvarvarande lag</>
-          ) : (
-            <>Första Tipset · Gruppvinnare +5 · Vidare +3 · Bracket-skeden 4–30 p</>
-          )
+          <>Första Tipset · Gruppvinnare +5 · Vidare +3 · Bracket-skeden 4–30 p</>
         ) : (
           <>{active?.label} · {active?.points_per_correct} poäng per korrekt vinnare</>
         )}
@@ -521,13 +461,19 @@ export default function TournamentPrediction() {
 
       {/* Editor */}
       {activeId === "pre_tournament" ? (
-        bracketMode === "dynamic" ? (
-          <DynamicBracketEditor afterStage={afterStage} allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} versionId={activeId} />
-        ) : (
-          <PreTournamentEditor groups={groups} allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} />
-        )
+        <PreTournamentEditor groups={groups} allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} />
       ) : (
-        <KnockoutVersionEditor matches={matches} picks={picks} setPicks={setPicks} locked={locked} versionId={activeId} />
+        <>
+          <KnockoutVersionEditor matches={matches} picks={picks} setPicks={setPicks} locked={locked} versionId={activeId} />
+          <DynamicBracketEditor afterStage={
+            activeId === "r32" ? "group" :
+            activeId === "r16" ? "r32" :
+            activeId === "qf" ? "r16" :
+            activeId === "sf" ? "qf" :
+            activeId === "third_place" ? "sf" :
+            activeId === "final" ? "third_place" : "group"
+          } allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} />
+        </>
       )}
 
       {err && <div className="text-[#FF3B30] text-sm">{err}</div>}

@@ -727,7 +727,7 @@ async def get_remaining_teams_after_stage(after_stage: str):
     # Build set of teams for each stage based on completed matches
     stage_teams = {
         "r32": set(), "r16": set(), "qf": set(), 
-        "sf": set(), "third_place": set(), "final": set()
+        "sf": set(), "third_place": set(), "final": set(), "champion": set()
     }
     
     for m in matches:
@@ -771,11 +771,12 @@ async def get_remaining_teams_after_stage(after_stage: str):
                 stage_teams["third_place"].add(tid)
             elif stage_l == "final" or m.get("stage") == "final":
                 stage_teams["final"].add(tid)
+                stage_teams["champion"].add(tid)
     
     # Return remaining stages after the given stage
     remaining_stages = []
     include_from = False
-    stage_order = ["group", "r32", "r16", "qf", "sf", "third_place", "final"]
+    stage_order = ["group", "r32", "r16", "qf", "sf", "third_place", "final", "champion"]
     
     for stage in stage_order:
         if stage == after_stage:
