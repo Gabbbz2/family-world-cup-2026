@@ -76,6 +76,88 @@ function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit, disable
   );
 }
 
+// ============ Dynamic Bracket editor (progressive bracket after each stage) ============
+function DynamicBracketEditor({ afterStage, allTeams, tmap, pred, setPred, locked, versionId }) {
+  const [remainingTeams, setRemainingTeams] = React.useState({});
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState("");
+
+  React.useEffect(() => {
+    const fetch = async () => {
+      setLoading(true); setErr("");
+      try {
+        const res = await api.get(`/strategy/remaining-teams/${afterStage}`);
+        setRemainingTeams(res || {});
+      } catch (e) {
+        setErr(formatError(e));
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetch();
+  }, [afterStage]);
+
+  const toggleList = (key, teamId) =>
+    setPred((p) => {
+      const arr = p[key].includes(teamId) ? p[key].filter((x) => x !== teamId) : [...p[key], teamId];
+      return { ...p, [key]: arr };
+    });
+
+  if (loading) return <div className="surface p-6 text-center text-zinc-500">Laddar återstående lag...</div>;
+  if (err) return <div className="surface p-6 text-[#FF3B30]">{err}</div>;
+
+  // Map of stages in order
+  const stageMap = [
+    { key: "r16", label: "Åttondelsfinal", color: "#00F0FF", limit: 16 },
+    { key: "qf", label: "Kvartsfinal", color: "#39FF14", limit: 8 },
+    { key: "sf", label: "Semifinal", color: "#FFCC00", limit: 4 },
+    { key: "third_place", label: "Bronsmatch", color: "#FF8A3D", limit: 2 },
+    { key: "final", label: "Final", color: "#FF3B30", limit: 2 },
+  ];
+
+  // Filter to stages that have remaining teams
+  const visibleStages = stageMap.filter(s => remainingTeams[s.key]);
+  if (visibleStages.length === 0) {
+    return <div className="surface p-6 text-center text-zinc-500">Ingen data tillgänglig ännu. Vänta på att omgången slutförs.</div>;
+  }
+
+  return (
+    <>
+      <section>
+        <h2 className="font-display font-bold text-xl mb-3">Återstående slutspelsträd</h2>
+        <p className="text-zinc-500 text-xs mb-3">
+          Endast lag som fortfarande är i turneringen visas. Återstarta tippning för varje omgång.
+        </p>
+      </section>
+
+      <div className="overflow-x-auto no-scrollbar">
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${visibleStages.length}, minmax(200px, 1fr))`, gap: '12px', minWidth: `${visibleStages.length * 220}px` }}>
+          {visibleStages.map((stage) => {
+            const teamsForStage = remainingTeams[stage.key] || [];
+            const selectedTeams = allTeams.filter(t => teamsForStage.includes(t.id));
+            return (
+              <div key={stage.key} className="surface p-3" data-testid={`dynamic-stage-${stage.key}`}>
+                <div className="label-eyebrow mb-2" style={{ color: stage.color }}>{stage.label}</div>
+                <TeamMultiPick
+                  teams={selectedTeams}
+                  selected={pred[stage.key] || []}
+                  onToggle={(id) => toggleList(stage.key, id)}
+                  testidPrefix={`dynamic-${stage.key}`}
+                  limit={stage.limit}
+                  disabled={locked}
+                />
+                <div className="mt-2 text-[10px] text-zinc-500">
+                  Valda: {(pred[stage.key] || []).length} / {stage.limit}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ============ Pre Tournament editor (old V1 shape) ============
 function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) {
   const setGroupRanking = (g, arr) =>
@@ -109,12 +191,13 @@ function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) 
         <h2 className="font-display font-bold text-xl mb-3">Slutspelsträd</h2>
         <p className="text-zinc-500 text-xs mb-3">Välj lagen som går vidare i varje omgång. Tryck för att markera.</p>
         <div className="overflow-x-auto no-scrollbar">
-          <div className="grid grid-cols-6 gap-3 min-w-[900px]">
+          <div className="grid grid-cols-7 gap-3 min-w-[1050px]">
             {[
               { key: "advancing", label: "Vidare från grupp", color: "#A1A1AA", limit: 32 },
               { key: "r16", label: "Åttondelsfinal", color: "#00F0FF", limit: 16 },
               { key: "qf", label: "Kvartsfinal", color: "#39FF14", limit: 8 },
               { key: "sf", label: "Semifinal", color: "#FFCC00", limit: 4 },
+              { key: "third_place", label: "Bronsmatch", color: "#FF8A3D", limit: 2 },
               { key: "finalists", label: "Finalister", color: "#FF3B30", limit: 2 },
               { key: "champion", label: "Mästare", color: "#FFFFFF" },
             ].map((stage) => (
@@ -226,10 +309,12 @@ export default function TournamentPrediction() {
   const [activeId, setActiveId] = useState("pre_tournament");
   const [groups, setGroups] = useState({});
   const [matches, setMatches] = useState([]);
-  const [pred, setPred] = useState({ group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], finalists: [], champion: "" });
+  const [pred, setPred] = useState({ group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], third_place: [], finalists: [], champion: "" });
   const [picks, setPicks] = useState({});
   const [saved, setSaved] = useState("");
   const [err, setErr] = useState("");
+  const [bracketMode, setBracketMode] = useState("pre_tournament"); // "pre_tournament" or "dynamic"
+  const [afterStage, setAfterStage] = useState("sf"); // stage completed for dynamic bracket
 
   const allTeams = useMemo(() => Object.values(groups).flat(), [groups]);
   const tmap = useMemo(() => {
@@ -264,13 +349,13 @@ export default function TournamentPrediction() {
           group_rankings: mine.group_rankings || {},
           advancing: mine.advancing || [],
           r32: mine.r32 || [], r16: mine.r16 || [], qf: mine.qf || [],
-          sf: mine.sf || [], finalists: mine.finalists || [], champion: mine.champion || "",
+          sf: mine.sf || [], third_place: mine.third_place || [], finalists: mine.finalists || [], champion: mine.champion || "",
         });
       } else {
         setPicks(mine.picks || {});
       }
     } else {
-      setPred({ group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], finalists: [], champion: "" });
+      setPred({ group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], third_place: [], finalists: [], champion: "" });
       setPicks({});
     }
   }, [activeId, versions]);
@@ -304,7 +389,7 @@ export default function TournamentPrediction() {
           <button
             key={v.id}
             data-testid={`version-${v.id}`}
-            onClick={() => setActiveId(v.id)}
+            onClick={() => { setActiveId(v.id); setBracketMode("pre_tournament"); }}
             className={`p-3 border text-left transition-all ${
               activeId === v.id ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
             }`}
@@ -323,8 +408,87 @@ export default function TournamentPrediction() {
         ))}
       </div>
 
-      {/* Active version banner */}
-      {active && (
+      {/* Dynamic bracket mode selector (only show when pre_tournament is being edited) */}
+      {activeId === "pre_tournament" && (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-zinc-400 uppercase tracking-widest">Bracket-läge</div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setBracketMode("pre_tournament")}
+              className={`p-3 border text-left transition-all ${
+                bracketMode === "pre_tournament" ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
+              }`}
+            >
+              <div className="font-semibold text-sm">Första Tipset</div>
+              <div className="text-[10px] text-zinc-500 mt-1">Sätt hela bracket innan slutspelet</div>
+            </button>
+            <button
+              onClick={() => setBracketMode("dynamic")}
+              className={`p-3 border text-left transition-all ${
+                bracketMode === "dynamic" ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
+              }`}
+            >
+              <div className="font-semibold text-sm">Dynamisk Bracket</div>
+              <div className="text-[10px] text-zinc-500 mt-1">Uppdatera efter varje omgång</div>
+            </button>
+          </div>
+
+          {/* Stage selector for dynamic bracket */}
+          {bracketMode === "dynamic" && (
+            <div className="space-y-2 mt-3">
+              <div className="text-xs font-semibold text-zinc-400 uppercase tracking-widest">Omgång slutförd</div>
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                {[
+                  { val: "group", label: "Gruppspel" },
+                  { val: "r16", label: "Åttondelsfinal" },
+                  { val: "qf", label: "Kvartsfinal" },
+                  { val: "sf", label: "Semifinal" },
+                ].map((s) => (
+                  <button
+                    key={s.val}
+                    onClick={() => setAfterStage(s.val)}
+                    className={`p-2 border text-center text-xs transition-all ${
+                      afterStage === s.val ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white" : "border-white/10 text-zinc-400 hover:border-white/30"
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Version selector - only show when not in pre_tournament or when in regular knockout versions */}
+      {activeId !== "pre_tournament" && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {versions.filter(v => v.id !== "pre_tournament").map((v) => (
+            <button
+              key={v.id}
+              data-testid={`version-${v.id}`}
+              onClick={() => setActiveId(v.id)}
+              className={`p-3 border text-left transition-all ${
+                activeId === v.id ? "border-[#00F0FF] bg-[#00F0FF]/10" : "border-white/10 hover:border-white/30"
+              }`}
+            >
+              <div className="label-eyebrow" style={{ color: v.locked ? "#A1A1AA" : "#39FF14" }}>{v.label}</div>
+              <div className="text-[10px] text-zinc-500 mt-1">
+                {v.match_count} matcher
+                {v.points_per_correct ? ` · ${v.points_per_correct} p/rätt` : ""}
+              </div>
+              <div className="text-[10px] uppercase tracking-widest mt-2">
+                {v.locked ? <span className="text-zinc-500">Stängd</span> :
+                  v.my_submitted ? <span className="text-[#39FF14]">Sparad</span> :
+                  <span className="text-[#FFCC00]">Öppen</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Active version banner - only show for knockout versions */}
+      {active && activeId !== "pre_tournament" && (
         locked ? (
           <div className="surface p-3 text-xs text-zinc-400" data-testid={`${activeId}-closed-banner`}>
             <span className="font-bold uppercase tracking-widest">{active.label}:</span> Tippning stängd.
@@ -345,7 +509,11 @@ export default function TournamentPrediction() {
       <div className="surface p-3 text-xs text-zinc-400 flex items-center gap-2">
         <Lightning size={16} className="text-[#00F0FF]" weight="fill" />
         {activeId === "pre_tournament" ? (
-          <>Första Tipset · Gruppvinnare +5 · Vidare +3 · Bracket-skeden 4–30 p</>
+          bracketMode === "dynamic" ? (
+            <>Dynamisk Bracket · Uppdatera efter varje omgång · Endast kvarvarande lag</>
+          ) : (
+            <>Första Tipset · Gruppvinnare +5 · Vidare +3 · Bracket-skeden 4–30 p</>
+          )
         ) : (
           <>{active?.label} · {active?.points_per_correct} poäng per korrekt vinnare</>
         )}
@@ -353,7 +521,11 @@ export default function TournamentPrediction() {
 
       {/* Editor */}
       {activeId === "pre_tournament" ? (
-        <PreTournamentEditor groups={groups} allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} />
+        bracketMode === "dynamic" ? (
+          <DynamicBracketEditor afterStage={afterStage} allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} versionId={activeId} />
+        ) : (
+          <PreTournamentEditor groups={groups} allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} />
+        )
       ) : (
         <KnockoutVersionEditor matches={matches} picks={picks} setPicks={setPicks} locked={locked} versionId={activeId} />
       )}

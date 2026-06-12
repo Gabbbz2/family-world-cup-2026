@@ -149,6 +149,7 @@ class TournamentPredictionReq(BaseModel):
     r16: List[str] = []
     qf: List[str] = []
     sf: List[str] = []
+    third_place: List[str] = []
     finalists: List[str] = []
     champion: Optional[str] = None
 
@@ -446,7 +447,7 @@ async def submit_tp(req: TournamentPredictionReq, user: dict = Depends(get_curre
         "id": str(uuid.uuid4()), "user_id": user["id"], "version": req.version,
         "group_rankings": req.group_rankings,
         "advancing": req.advancing, "r32": req.r32, "r16": req.r16, "qf": req.qf,
-        "sf": req.sf, "finalists": req.finalists, "champion": req.champion,
+        "sf": req.sf, "third_place": req.third_place, "finalists": req.finalists, "champion": req.champion,
         "submitted_at": now_utc().isoformat(),
         "is_late": False,
     }
@@ -546,6 +547,7 @@ class StrategySubmitReq(BaseModel):
     r16: List[str] = []
     qf: List[str] = []
     sf: List[str] = []
+    third_place: List[str] = []  # bronsmatch
     finalists: List[str] = []
     champion: Optional[str] = None
     # For knockout versions:
@@ -668,7 +670,7 @@ async def submit_strategy_version(version_id: str, req: StrategySubmitReq, user:
         doc.update({
             "group_rankings": req.group_rankings,
             "advancing": req.advancing, "r32": req.r32, "r16": req.r16, "qf": req.qf,
-            "sf": req.sf, "finalists": req.finalists, "champion": req.champion,
+            "sf": req.sf, "third_place": req.third_place, "finalists": req.finalists, "champion": req.champion,
         })
     else:
         # Knockout winner picks: validate each match belongs to this version's stage
@@ -708,6 +710,85 @@ async def visible_strategy_predictions(version_id: str, user: dict = Depends(get
     for d in docs:
         d["user_name"] = umap.get(d["user_id"], {}).get("name", "Spelare")
     return {"locked": False, "predictions": docs}
+
+@api.get("/strategy/remaining-teams/{after_stage}")
+async def get_remaining_teams_after_stage(after_stage: str):
+    """
+    Returns teams still remaining in tournament after a given stage completes.
+    after_stage can be: "group", "r32", "r16", "qf", "sf", "third_place"
+    Returns: {stage: [team_id, ...]} for all future stages
+    """
+    valid_stages = ["group", "r32", "r16", "qf", "sf", "third_place"]
+    if after_stage not in valid_stages:
+        raise HTTPException(400, f"Okänd omgång: {after_stage}")
+    
+    matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
+    
+    # Build set of teams for each stage based on completed matches
+    stage_teams = {
+        "r32": set(), "r16": set(), "qf": set(), 
+        "sf": set(), "third_place": set(), "final": set()
+    }
+    
+    for m in matches:
+        if m.get("status") != "finished":
+            continue
+        stage_l = (m.get("round") or m.get("stage") or "").lower()
+        for tid_key in ("home_team_id", "away_team_id"):
+            tid = m.get(tid_key)
+            if not tid:
+                continue
+            # Determine winner
+            hs = m.get("home_score")
+            as_ = m.get("away_score")
+            if hs is None or as_ is None:
+                continue
+            winner_id = None
+            if hs > as_:
+                winner_id = m.get("home_team_id")
+            elif as_ > hs:
+                winner_id = m.get("away_team_id")
+            
+            # Mark both teams as participants, but only winner advances
+            if "sextondelsfinal" in stage_l or m.get("stage") == "r32":
+                stage_teams["r32"].add(tid)
+                if winner_id:
+                    stage_teams["r16"].add(winner_id)
+            elif "åttondelsfinal" in stage_l or m.get("stage") == "r16":
+                stage_teams["r16"].add(tid)
+                if winner_id:
+                    stage_teams["qf"].add(winner_id)
+            elif "kvartsfinal" in stage_l or m.get("stage") == "qf":
+                stage_teams["qf"].add(tid)
+                if winner_id:
+                    stage_teams["sf"].add(winner_id)
+            elif "semifinal" in stage_l or m.get("stage") == "sf":
+                stage_teams["sf"].add(tid)
+                if winner_id:
+                    stage_teams["third_place"].add(winner_id)
+                    stage_teams["final"].add(winner_id)
+            elif "bronsmatch" in stage_l or m.get("round") == "bronsmatch":
+                stage_teams["third_place"].add(tid)
+            elif stage_l == "final" or m.get("stage") == "final":
+                stage_teams["final"].add(tid)
+    
+    # Return remaining stages after the given stage
+    remaining_stages = []
+    include_from = False
+    stage_order = ["group", "r32", "r16", "qf", "sf", "third_place", "final"]
+    
+    for stage in stage_order:
+        if stage == after_stage:
+            include_from = True
+            continue
+        if include_from and stage in stage_teams:
+            remaining_stages.append(stage)
+    
+    result = {}
+    for stage in remaining_stages:
+        result[stage] = list(stage_teams.get(stage, []))
+    
+    return result
 
 @api.post("/admin/strategy/version/{version_id}/override")
 async def admin_strategy_override(version_id: str, req: StrategyOverrideReq, admin: dict = Depends(require_admin)):
@@ -767,7 +848,7 @@ async def recompute_live_points():
 # Strategy scoring constants
 STRATEGY_POINTS = {
     "group_winner": 5, "advancing": 3, "r32": 4, "r16": 6,
-    "qf": 8, "sf": 12, "finalist": 20, "champion": 30,
+    "qf": 8, "sf": 12, "third_place": 15, "finalist": 20, "champion": 30,
 }
 VERSION_MULT = {1: 1.0, 2: 0.75, 3: 0.5, 4: 0.25}
 
@@ -793,6 +874,7 @@ async def recompute_strategy_points():
     # Actual stage participants - derived from matches that have teams (post-progression)
     matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
     stage_teams: Dict[str, set] = defaultdict(set)
+    third_place_teams: set = set()
     finals_teams: set = set()
     champion_id: Optional[str] = None
     for m in matches:
@@ -809,6 +891,8 @@ async def recompute_strategy_points():
                 stage_teams["qf"].add(tid)
             elif "semifinal" in stage_l or m.get("stage") == "sf":
                 stage_teams["sf"].add(tid)
+            elif "bronsmatch" in stage_l or m.get("round") == "bronsmatch":
+                third_place_teams.add(tid)
             elif stage_l == "final" or m.get("stage") == "final":
                 finals_teams.add(tid)
         # Determine champion
@@ -860,6 +944,9 @@ async def recompute_strategy_points():
             for tid in (tp.get("sf") or []):
                 if tid in stage_teams["sf"]:
                     pts += STRATEGY_POINTS["sf"]
+            for tid in (tp.get("third_place") or []):
+                if tid in third_place_teams:
+                    pts += STRATEGY_POINTS["third_place"]
             for tid in (tp.get("finalists") or []):
                 if tid in finals_teams:
                     pts += STRATEGY_POINTS["finalist"]
