@@ -1188,8 +1188,13 @@ async def leaderboard():
             "total_points": live + strat, "role": u.get("role", "user"),
         })
     rows.sort(key=lambda r: r["total_points"], reverse=True)
+    rank = 1
+    prev_points = None
     for i, r in enumerate(rows):
-        r["rank"] = i + 1
+        if i > 0 and r["total_points"] != prev_points:
+            rank += 1
+        r["rank"] = rank
+        prev_points = r["total_points"]
     return rows
 
 # ============== Admin: Users & Invites ==============

@@ -21,6 +21,19 @@ export default function Leaderboard() {
     return b.total_points - a.total_points;
   });
 
+  const ranked = (() => {
+    let currentRank = 1;
+    let previousValue = null;
+    return sorted.map((row, index) => {
+      const value = tab === "live" ? row.live_points : tab === "strategy" ? row.strategy_points : row.total_points;
+      if (index > 0 && value !== previousValue) {
+        currentRank += 1;
+      }
+      previousValue = value;
+      return { ...row, display_rank: currentRank };
+    });
+  })();
+
   return (
     <div className="space-y-4">
       <div className="relative overflow-hidden surface p-6">
@@ -85,7 +98,7 @@ export default function Leaderboard() {
           </div>
         </div>
 
-        {sorted.map((r, idx) => (
+        {ranked.map((r, idx) => (
           <div
             key={r.user_id}
             data-testid={`board-row-${r.user_id}`}
@@ -94,17 +107,17 @@ export default function Leaderboard() {
             }`}
           >
             <div className="font-display font-black min-w-0">
-              <span className="sm:hidden">{idx + 1}</span>
+              <span className="sm:hidden">{r.display_rank}</span>
 
               <span className="hidden sm:inline">
-                {idx === 0 ? (
+                {r.display_rank === 1 ? (
                   <Crown size={18} weight="fill" className="text-[#FFCC00]" />
-                ) : idx === 1 ? (
+                ) : r.display_rank === 2 ? (
                   <Medal size={18} weight="fill" className="text-zinc-300" />
-                ) : idx === 2 ? (
+                ) : r.display_rank === 3 ? (
                   <Medal size={18} weight="fill" className="text-orange-400" />
                 ) : (
-                  idx + 1
+                  r.display_rank
                 )}
               </span>
             </div>
