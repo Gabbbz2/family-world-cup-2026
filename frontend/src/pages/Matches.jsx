@@ -78,21 +78,84 @@ function MatchRow({ match, myPred, onSubmit }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-7 items-center gap-2">
+      {/* Teams + score */}
+      <div className="sm:hidden space-y-3">
+        {finished ? (
+          <>
+            <div className={`flex items-center justify-start min-w-0 ${homeWon ? "" : awayWon ? "opacity-50" : ""}`}>
+              <FlagTeam
+                team={match.home_team}
+                placeholder={match.home_placeholder}
+                size={22}
+                dim={awayWon && finished}
+              />
+            </div>
+
+            <div
+              className="font-display font-black text-5xl leading-none text-center text-[#39FF14]"
+              data-testid={`score-${match.id}`}
+            >
+              {match.home_score}:{match.away_score}
+            </div>
+
+            <div className={`flex items-center justify-end min-w-0 ${awayWon ? "" : homeWon ? "opacity-50" : ""}`}>
+              <FlagTeam
+                team={match.away_team}
+                placeholder={match.away_placeholder}
+                size={22}
+                reverse
+                dim={homeWon && finished}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="grid grid-cols-[minmax(0,1fr)_40px_minmax(0,1fr)] items-center gap-2">
+            <div className="min-w-0">
+              <FlagTeam team={match.home_team} placeholder={match.home_placeholder} size={22} />
+            </div>
+
+            <div className="text-center">
+              <span className="label-eyebrow text-zinc-500">vs</span>
+            </div>
+
+            <div className="min-w-0 flex justify-end">
+              <FlagTeam team={match.away_team} placeholder={match.away_placeholder} size={22} reverse />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="hidden sm:grid grid-cols-7 items-center gap-2">
         <div className={`col-span-3 ${homeWon ? "" : awayWon ? "opacity-50" : ""}`}>
-          <FlagTeam team={match.home_team} placeholder={match.home_placeholder} size={22} dim={awayWon && finished} />
+          <FlagTeam
+            team={match.home_team}
+            placeholder={match.home_placeholder}
+            size={22}
+            dim={awayWon && finished}
+          />
         </div>
+
         <div className="col-span-1 text-center">
           {finished ? (
-            <div className="font-display font-black text-2xl text-[#39FF14]" data-testid={`score-${match.id}`}>
+            <div
+              className="font-display font-black text-2xl text-[#39FF14]"
+              data-testid={`score-${match.id}`}
+            >
               {match.home_score} : {match.away_score}
             </div>
           ) : (
             <span className="label-eyebrow text-zinc-500">vs</span>
           )}
         </div>
+
         <div className={`col-span-3 flex justify-end ${awayWon ? "" : homeWon ? "opacity-50" : ""}`}>
-          <FlagTeam team={match.away_team} placeholder={match.away_placeholder} size={22} reverse dim={homeWon && finished} />
+          <FlagTeam
+            team={match.away_team}
+            placeholder={match.away_placeholder}
+            size={22}
+            reverse
+            dim={homeWon && finished}
+          />
         </div>
       </div>
 
@@ -235,7 +298,7 @@ export default function Matches() {
       <div>
         <div className="label-eyebrow">Livetippning</div>
         <h1 className="font-display font-black text-3xl tracking-tighter">Matcher</h1>
-        <p className="text-zinc-500 text-sm mt-1">Tippa 3 (vinnare) + 2 (målskillnad) + 5 (exakt) = max 10 p/match. Tippningen stänger 5 minuter före avspark.</p>
+        <p className="text-zinc-500 text-sm mt-1">Tippa 3p (vinnare), 2p (målskillnad, mål för lagen), 1p (bonuspoäng för helt rätt) = max 10 p/match. Tippningen stänger 5 minuter före avspark.</p>
       </div>
 
       <div className="flex gap-2 flex-wrap">

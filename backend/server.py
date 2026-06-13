@@ -400,16 +400,40 @@ async def match_predictions_visible(match_id: str, user: dict = Depends(get_curr
     match = await db.matches.find_one({"id": match_id}, {"_id": 0})
     if not match:
         raise HTTPException(404, "Match not found")
+
     kickoff = match.get("kickoff")
-    if kickoff and user.get("role") != "admin":
-        lock_time = kickoff - timedelta(minutes=5)
-        if datetime.utcnow() < lock_time:
-            return {"locked": True, "predictions": []}
-    preds = await db.match_predictions.find({"match_id": match_id}, {"_id": 0}).to_list(500)
-    users = await db.users.find({"id": {"$in": [p["user_id"] for p in preds]}}, {"_id": 0, "password_hash": 0}).to_list(500)
+    if not kickoff:
+        return {"locked": True, "predictions": []}
+
+    if isinstance(kickoff, str):
+        kickoff_dt = datetime.fromisoformat(kickoff)
+    else:
+        kickoff_dt = kickoff
+
+    if kickoff_dt.tzinfo is None:
+        kickoff_dt = kickoff_dt.replace(tzinfo=timezone.utc)
+
+    lock_time = kickoff_dt - timedelta(minutes=5)
+
+    # Hide others' predictions before lock time, except for admin
+    if user.get("role") != "admin" and now_utc() < lock_time:
+        return {"locked": True, "predictions": []}
+
+    preds = await db.match_predictions.find(
+        {"match_id": match_id},
+        {"_id": 0}
+    ).to_list(500)
+
+    users = await db.users.find(
+        {"id": {"$in": [p["user_id"] for p in preds]}},
+        {"_id": 0, "password_hash": 0}
+    ).to_list(500)
+
     umap = {u["id"]: u for u in users}
+
     for p in preds:
         p["user"] = umap.get(p["user_id"], {})
+
     return {"locked": False, "predictions": preds}
 
 # ============== Tournament Predictions ==============
@@ -822,15 +846,31 @@ async def admin_strategy_recompute(admin: dict = Depends(require_admin)):
 def score_match(pred_h, pred_a, actual_h, actual_a) -> int:
     if actual_h is None or actual_a is None:
         return 0
+
     pts = 0
-    pw = (pred_h > pred_a) - (pred_h < pred_a)
-    aw = (actual_h > actual_a) - (actual_h < actual_a)
-    if pw == aw:
+
+    pred_outcome = (pred_h > pred_a) - (pred_h < pred_a)
+    actual_outcome = (actual_h > actual_a) - (actual_h < actual_a)
+
+    # Rätt vinnare/oavgjort
+    if pred_outcome == actual_outcome:
         pts += 3
+
+    # Rätt målskillnad
     if (pred_h - pred_a) == (actual_h - actual_a):
         pts += 2
+
+    # Rätt antal mål för ett lag
+    if pred_h == actual_h:
+        pts += 2
+
+    if pred_a == actual_a:
+        pts += 2
+
+    # Bonus för exakt resultat
     if pred_h == actual_h and pred_a == actual_a:
-        pts += 5
+        pts += 1
+
     return pts
 
 async def recompute_live_points():
