@@ -12,11 +12,15 @@ import Leaderboard from "./pages/Leaderboard";
 import TournamentPrediction from "./pages/TournamentPrediction";
 import HallOfFame from "./pages/HallOfFame";
 import Admin from "./pages/Admin";
+import UpdateNotice from "./components/UpdateNotice";
 
 function Shell({ children }) {
   return (
     <ProtectedRoute>
-      <Layout>{children}</Layout>
+      <Layout>
+        <UpdateNotice />
+        {children}
+      </Layout>
     </ProtectedRoute>
   );
 }
@@ -24,7 +28,10 @@ function Shell({ children }) {
 function AdminShell({ children }) {
   return (
     <ProtectedRoute adminOnly>
-      <Layout>{children}</Layout>
+      <Layout>
+        <UpdateNotice />
+        {children}
+      </Layout>
     </ProtectedRoute>
   );
 }

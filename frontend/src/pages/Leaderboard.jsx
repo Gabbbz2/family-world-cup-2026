@@ -36,13 +36,17 @@ export default function Leaderboard() {
         <div className="absolute inset-0 bg-gradient-to-r from-[#0A0A0A] via-[#0A0A0A]/60 to-transparent" />
         <div className="relative">
           <div className="label-eyebrow">Familjens ställning</div>
-          <h1 className="font-display font-black text-4xl tracking-tighter">Topplista.</h1>
-          <p className="text-zinc-300 text-sm mt-2 max-w-md">Total = Live + Strategi. Live växer match för match; Strategi är dina turneringstips.</p>
+          <h1 className="font-display font-black text-4xl tracking-tighter">
+            Topplista.
+          </h1>
+          <p className="text-zinc-300 text-sm mt-2 max-w-md">
+            Total = Live + Strategi. Live växer match för match; Strategi är dina
+            turneringstips.
+          </p>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 overflow-x-auto pb-1">
         {[
           { id: "total", label: "Totalpoäng" },
           { id: "live", label: "Livepoäng" },
@@ -52,7 +56,7 @@ export default function Leaderboard() {
             key={t.id}
             data-testid={`tab-${t.id}`}
             onClick={() => setTab(t.id)}
-            className={`px-3 py-2 text-xs uppercase tracking-widest font-bold border transition-all ${
+            className={`shrink-0 px-3 py-2 text-xs uppercase tracking-widest font-bold border transition-all ${
               tab === t.id
                 ? "bg-[#00F0FF] text-black border-[#00F0FF]"
                 : "border-white/10 text-zinc-400 hover:text-white"
@@ -63,39 +67,66 @@ export default function Leaderboard() {
         ))}
       </div>
 
-      <div className="surface">
-        <div className="grid grid-cols-12 gap-2 px-3 py-2 label-eyebrow border-b border-white/10">
-          <div className="col-span-1">#</div>
-          <div className="col-span-5">Spelare</div>
-          <div className="col-span-2 text-right">Live</div>
-          <div className="col-span-2 text-right">Strategi</div>
-          <div className="col-span-2 text-right">Totalt</div>
+      <div className="surface overflow-hidden">
+        <div className="grid grid-cols-[28px_minmax(0,1fr)_42px_42px_42px] sm:grid-cols-[40px_minmax(0,1fr)_70px_90px_70px] gap-1 sm:gap-2 px-2 sm:px-3 py-2 label-eyebrow border-b border-white/10 text-[9px] sm:text-xs">
+          <div>#</div>
+          <div>Spelare</div>
+          <div className="text-right">Live</div>
+          <div className="text-right">
+            <span className="sm:hidden">Str.</span>
+            <span className="hidden sm:inline">Strategi</span>
+          </div>
+          <div className="text-right">
+            <span className="sm:hidden">Tot.</span>
+            <span className="hidden sm:inline">Totalt</span>
+          </div>
         </div>
+
         {sorted.map((r, idx) => (
           <div
             key={r.user_id}
             data-testid={`board-row-${r.user_id}`}
-            className={`grid grid-cols-12 gap-2 px-3 py-3 border-b border-white/5 text-sm items-center ${
-              r.user_id === user.id ? "bg-[#00F0FF]/5" : ""
+            className={`grid grid-cols-[28px_minmax(0,1fr)_42px_42px_42px] sm:grid-cols-[40px_minmax(0,1fr)_70px_90px_70px] gap-1 sm:gap-2 px-2 sm:px-3 py-3 border-b border-white/5 text-xs sm:text-sm items-center ${
+              r.user_id === user?.id ? "bg-[#00F0FF]/5" : ""
             }`}
           >
-            <div className="col-span-1 font-display font-black">
-              {idx === 0 ? <Crown size={18} weight="fill" className="text-[#FFCC00]" /> :
-                idx === 1 ? <Medal size={18} weight="fill" className="text-zinc-300" /> :
-                idx === 2 ? <Medal size={18} weight="fill" className="text-orange-400" /> :
-                idx + 1}
+            <div className="font-display font-black min-w-0">
+              {idx === 0 ? (
+                <Crown size={18} weight="fill" className="text-[#FFCC00]" />
+              ) : idx === 1 ? (
+                <Medal size={18} weight="fill" className="text-zinc-300" />
+              ) : idx === 2 ? (
+                <Medal size={18} weight="fill" className="text-orange-400" />
+              ) : (
+                idx + 1
+              )}
             </div>
-            <div className="col-span-5 truncate">
-              <div className="font-semibold">{r.name}</div>
-              <div className="text-[10px] text-zinc-500 uppercase tracking-widest">{r.role}</div>
+
+            <div className="truncate min-w-0">
+              <div className="font-semibold truncate">{r.name}</div>
+              <div className="text-[9px] sm:text-[10px] text-zinc-500 uppercase tracking-widest truncate">
+                {r.role}
+              </div>
             </div>
-            <div className="col-span-2 text-right font-mono">{r.live_points}</div>
-            <div className="col-span-2 text-right font-mono">{r.strategy_points}</div>
-            <div className="col-span-2 text-right font-mono font-bold text-[#39FF14]">{r.total_points}</div>
+
+            <div className="text-right font-mono tabular-nums min-w-0">
+              {r.live_points}
+            </div>
+
+            <div className="text-right font-mono tabular-nums min-w-0">
+              {r.strategy_points}
+            </div>
+
+            <div className="text-right font-mono tabular-nums font-bold text-[#39FF14] min-w-0">
+              {r.total_points}
+            </div>
           </div>
         ))}
+
         {sorted.length === 0 && (
-          <div className="p-6 text-center text-zinc-500 text-sm">Inga spelare ännu.</div>
+          <div className="p-6 text-center text-zinc-500 text-sm">
+            Inga spelare ännu.
+          </div>
         )}
       </div>
     </div>

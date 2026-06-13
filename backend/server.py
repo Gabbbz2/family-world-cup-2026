@@ -857,56 +857,66 @@ async def recompute_strategy_points():
     """Compute strategy points for each user based on tournament predictions vs actual results so far."""
     # Determine actual outcomes from match data + standings
     standings = await compute_all_standings()
-    # actual_group_winners[g] = team_id of 1st
+
+    # Compute completed groups and confirmed advancers to R32
     actual_group_winners: Dict[str, str] = {}
     actual_advancing: set = set()
+    group_complete: Dict[str, bool] = {}
     for g, rows in standings.items():
-        if rows:
+        # group is considered complete only when every team has played 3 matches
+        group_complete[g] = len(rows) >= 4 and all(r.get("played", 0) >= 3 for r in rows)
+        if group_complete[g] and rows:
             actual_group_winners[g] = rows[0]["team_id"]
-            # advancing = top 2 of each group + best 8 thirds (we mark top 2 as advancing here)
+            # top two from complete groups advance
             for r in rows[:2]:
                 actual_advancing.add(r["team_id"])
-    # Best thirds
-    thirds = [(g, rows[2]) for g, rows in standings.items() if len(rows) >= 3]
+    # Best 8 third-placed teams only from complete groups
+    thirds = [(g, rows[2]) for g, rows in standings.items() if group_complete.get(g) and len(rows) >= 3]
     thirds.sort(key=lambda x: (-x[1]["points"], -x[1]["goal_diff"], -x[1]["goals_for"]))
     for g, r in thirds[:8]:
         actual_advancing.add(r["team_id"])
 
-    # Actual stage participants - derived from matches that have teams (post-progression)
+    # Gather finished matches and compute confirmed participants per knockout stage
     matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
-    stage_teams: Dict[str, set] = defaultdict(set)
-    third_place_teams: set = set()
-    finals_teams: set = set()
+    confirmed_r32 = set(actual_advancing)  # confirmed by completed groups
+    confirmed_r16 = set()
+    confirmed_qf = set()
+    confirmed_sf = set()
+    confirmed_finalists = set()
+    bronze_winner_id: Optional[str] = None
     champion_id: Optional[str] = None
-    for m in matches:
-        stage_l = (m.get("round") or m.get("stage") or "").lower()
-        for tid_key in ("home_team_id", "away_team_id"):
-            tid = m.get(tid_key)
-            if not tid:
-                continue
-            if "sextondelsfinal" in stage_l or m.get("stage") == "r32":
-                stage_teams["r32"].add(tid)
-            elif "åttondelsfinal" in stage_l or m.get("stage") == "r16":
-                stage_teams["r16"].add(tid)
-            elif "kvartsfinal" in stage_l or m.get("stage") == "qf":
-                stage_teams["qf"].add(tid)
-            elif "semifinal" in stage_l or m.get("stage") == "sf":
-                stage_teams["sf"].add(tid)
-            elif "bronsmatch" in stage_l or m.get("round") == "bronsmatch":
-                third_place_teams.add(tid)
-            elif stage_l == "final" or m.get("stage") == "final":
-                finals_teams.add(tid)
-        # Determine champion
-        if (stage_l == "final" or m.get("stage") == "final") and m.get("status") == "finished":
-            if m.get("home_score") is not None and m.get("away_score") is not None:
-                if m["home_score"] > m["away_score"]:
-                    champion_id = m.get("home_team_id")
-                elif m["away_score"] > m["home_score"]:
-                    champion_id = m.get("away_team_id")
 
-    # Score each user's tournament predictions
-    tps = await db.tournament_predictions.find({}, {"_id": 0}).to_list(2000)
-    # Pre-compute actual winner per finished knockout match (by match_id)
+    # Map of finished knockout winners by match stage to derive confirmed progressions
+    for m in matches:
+        if m.get("status") != "finished":
+            continue
+        stage_l = (m.get("round") or m.get("stage") or "").lower()
+        hs, as_ = m.get("home_score"), m.get("away_score")
+        if hs is None or as_ is None:
+            continue
+        winner = m.get("home_team_id") if hs > as_ else (m.get("away_team_id") if as_ > hs else None)
+        if not winner:
+            continue
+        # Finished R32 matches produce confirmed R16 participants
+        if "sextondelsfinal" in stage_l or m.get("stage") == "r32":
+            confirmed_r16.add(winner)
+        # Finished R16 -> produce confirmed QF
+        if "åttondelsfinal" in stage_l or m.get("stage") == "r16":
+            confirmed_qf.add(winner)
+        # Finished QF -> produce confirmed SF
+        if "kvartsfinal" in stage_l or m.get("stage") == "qf":
+            confirmed_sf.add(winner)
+        # Finished SF -> finalists
+        if "semifinal" in stage_l or m.get("stage") == "sf":
+            confirmed_finalists.add(winner)
+        # Bronze match winner
+        if "bronsmatch" in stage_l or m.get("round") == "bronsmatch":
+            bronze_winner_id = winner
+        # Final winner -> champion
+        if stage_l == "final" or m.get("stage") == "final":
+            champion_id = winner
+
+    # Pre-compute actual winner per finished knockout match (by match_id) for per-match picks
     actual_winner_by_match: Dict[str, str] = {}
     for m in matches:
         if m.get("stage") == "Knockout" and m.get("status") == "finished":
@@ -917,44 +927,51 @@ async def recompute_strategy_points():
                 actual_winner_by_match[m["id"]] = m.get("home_team_id")
             elif as_ > hs:
                 actual_winner_by_match[m["id"]] = m.get("away_team_id")
+
+    # Score each user's tournament predictions
+    tps = await db.tournament_predictions.find({}, {"_id": 0}).to_list(2000)
     user_strategy: Dict[str, float] = defaultdict(float)
     for tp in tps:
         version_id = tp.get("version", "pre_tournament")
-        # Backward compat: legacy V1/V2/V3/V4 integer ids -> pre_tournament-like scoring (no longer used by new UI)
         if isinstance(version_id, int) or (isinstance(version_id, str) and version_id.isdigit()):
             version_id = "pre_tournament"
         pts = 0
         if version_id == "pre_tournament":
-            # Group rankings: 1st correct = +5; teams in advancing (top 2) = +3 each
+            # Group rankings: 1st correct = +5 (only if group complete and winner known)
             for g, ranking in (tp.get("group_rankings") or {}).items():
-                if ranking and len(ranking) >= 1 and ranking[0] == actual_group_winners.get(g):
+                if ranking and len(ranking) >= 1 and group_complete.get(g) and ranking[0] == actual_group_winners.get(g):
                     pts += STRATEGY_POINTS["group_winner"]
-                for tid in (ranking[:2] if ranking else []):
-                    if tid and tid in actual_advancing:
+                # Advancement points: award for any predicted team that actually advanced to R32
+                for tid in (ranking or []):
+                    if tid and tid in confirmed_r32:
                         pts += STRATEGY_POINTS["advancing"]
-            # Bracket lists
+
+            # Bracket lists: only award when the stage progression is confirmed
             for tid in (tp.get("r32") or []):
-                if tid in stage_teams["r32"]:
+                if tid in confirmed_r32:
                     pts += STRATEGY_POINTS["r32"]
             for tid in (tp.get("r16") or []):
-                if tid in stage_teams["r16"]:
+                if tid in confirmed_r16:
                     pts += STRATEGY_POINTS["r16"]
             for tid in (tp.get("qf") or []):
-                if tid in stage_teams["qf"]:
+                if tid in confirmed_qf:
                     pts += STRATEGY_POINTS["qf"]
             for tid in (tp.get("sf") or []):
-                if tid in stage_teams["sf"]:
+                if tid in confirmed_sf:
                     pts += STRATEGY_POINTS["sf"]
+            # Bronze match: award only if team won the bronze match
             for tid in (tp.get("third_place") or []):
-                if tid in third_place_teams:
+                if bronze_winner_id and tid == bronze_winner_id:
                     pts += STRATEGY_POINTS["third_place"]
+            # Finalists: award only when finalists are known (confirmed_finalists)
             for tid in (tp.get("finalists") or []):
-                if tid in finals_teams:
+                if tid in confirmed_finalists:
                     pts += STRATEGY_POINTS["finalist"]
+            # Champion: award only when final completed and champion known
             if tp.get("champion") and champion_id and tp["champion"] == champion_id:
                 pts += STRATEGY_POINTS["champion"]
         else:
-            # Knockout-stage winner picks
+            # Knockout-stage winner picks: only count finished matches
             vdef = VERSION_BY_ID.get(version_id)
             ppc = (vdef or {}).get("points_per_correct") or 0
             for mid, picked_tid in (tp.get("picks") or {}).items():
