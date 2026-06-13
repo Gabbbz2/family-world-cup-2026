@@ -400,9 +400,11 @@ async def match_predictions_visible(match_id: str, user: dict = Depends(get_curr
     match = await db.matches.find_one({"id": match_id}, {"_id": 0})
     if not match:
         raise HTTPException(404, "Match not found")
-    # Others' predictions are revealed only after the match is finished.
-    if match.get("status") != "finished" and user.get("role") != "admin":
-        return {"locked": True, "predictions": []}
+    kickoff = match.get("kickoff")
+    if kickoff and user.get("role") != "admin":
+        lock_time = kickoff - timedelta(minutes=5)
+        if datetime.utcnow() < lock_time:
+            return {"locked": True, "predictions": []}
     preds = await db.match_predictions.find({"match_id": match_id}, {"_id": 0}).to_list(500)
     users = await db.users.find({"id": {"$in": [p["user_id"] for p in preds]}}, {"_id": 0, "password_hash": 0}).to_list(500)
     umap = {u["id"]: u for u in users}

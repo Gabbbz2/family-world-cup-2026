@@ -145,7 +145,7 @@ function MatchRow({ match, myPred, onSubmit }) {
           </button>
           {othersOpen && others && (
             <div className="mt-2 border border-white/10 p-3 text-sm">
-              {others.locked ? <div className="text-zinc-500">Andras tips visas när matchen är slut.</div>
+              {others.locked ? <div className="text-zinc-500">Andras tips visas när tippningen är stängd.</div>
                 : others.predictions.length === 0 ? <div className="text-zinc-500">Inga tips inskickade.</div>
                 : (
                   <ul className="divide-y divide-white/5">

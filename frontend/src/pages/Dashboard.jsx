@@ -146,47 +146,43 @@ export default function Dashboard() {
             {groupKeys.map((g) => (
               <div key={g} className="surface p-3" data-testid={`dash-standings-${g}`}>
                 <div className="label-eyebrow mb-2">Grupp {g}</div>
-                <div className="overflow-hidden">
-                  <table className="w-full text-xs table-fixed">
-                    <colgroup>
-                      <col style={{ width: "auto", minWidth: "0" }} />
-                      <col style={{ width: "2rem" }} />
-                      <col style={{ width: "2rem" }} />
-                      <col style={{ width: "2rem" }} />
-                      <col style={{ width: "2rem" }} />
-                      <col style={{ width: "2.5rem" }} />
-                      <col style={{ width: "2rem" }} />
-                    </colgroup>
-                    <thead className="text-zinc-500">
-                      <tr>
-                        <th className="text-left py-2">Lag</th>
-                        <th className="text-center py-2">S</th>
-                        <th className="text-center py-2">V</th>
-                        <th className="text-center py-2">O</th>
-                        <th className="text-center py-2">F</th>
-                        <th className="text-center py-2">MS</th>
-                        <th className="text-center py-2">P</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {standings[g].map((r, idx) => (
-                        <tr key={r.team_id} className={idx < 2 ? "text-white" : "text-zinc-400"}>
-                          <td className="text-left py-2 pr-2 align-top min-w-0">
-                            <div className="inline-flex min-w-0 items-start gap-1.5 break-words whitespace-normal">
-                              <Flag code={r.country_code} size={14} />
-                              <span className="min-w-0 break-words whitespace-normal leading-tight">{r.team_name}</span>
-                            </div>
-                          </td>
-                          <td className="text-center font-mono py-2">{r.played}</td>
-                          <td className="text-center font-mono py-2">{r.won}</td>
-                          <td className="text-center font-mono py-2">{r.drawn}</td>
-                          <td className="text-center font-mono py-2">{r.lost}</td>
-                          <td className="text-center font-mono py-2">{r.goal_diff > 0 ? `+${r.goal_diff}` : r.goal_diff}</td>
-                          <td className="text-center font-mono font-bold text-[#39FF14] py-2">{r.points}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="surface p-0 overflow-hidden">
+                  <div className="hidden sm:grid grid-cols-[minmax(0,1fr)_2.75rem_2.75rem_2.75rem_2.75rem_3rem_2.75rem] gap-2 text-zinc-500 text-xs border-b border-white/10 px-3 py-2">
+                    <div className="text-left">Lag</div>
+                    <div className="text-center">S</div>
+                    <div className="text-center">V</div>
+                    <div className="text-center">O</div>
+                    <div className="text-center">F</div>
+                    <div className="text-center">MS</div>
+                    <div className="text-center">P</div>
+                  </div>
+
+                  <div className="grid grid-cols-[minmax(0,1fr)_24px_24px_24px_24px_34px_24px] sm:hidden gap-2 text-zinc-500 text-xs border-b border-white/10 px-3 py-2">
+                    <div className="text-left">Lag</div>
+                    <div className="text-center">S</div>
+                    <div className="text-center">V</div>
+                    <div className="text-center">O</div>
+                    <div className="text-center">F</div>
+                    <div className="text-center">MS</div>
+                    <div className="text-center">P</div>
+                  </div>
+
+                  <div>
+                    {standings[g].map((r, idx) => (
+                      <div key={r.team_id} className={`${idx < 2 ? "text-white" : "text-zinc-400"} grid grid-cols-[minmax(0,1fr)_24px_24px_24px_24px_34px_24px] sm:grid-cols-[minmax(0,1fr)_2.75rem_2.75rem_2.75rem_2.75rem_3rem_2.75rem] gap-2 px-3 py-3 items-start`}>
+                        <div className="min-w-0 truncate flex items-center gap-2">
+                          <Flag code={r.country_code} size={14} />
+                          <span className="truncate">{r.team_name}</span>
+                        </div>
+                        <div className="text-center font-mono">{r.played}</div>
+                        <div className="text-center font-mono">{r.won}</div>
+                        <div className="text-center font-mono">{r.drawn}</div>
+                        <div className="text-center font-mono">{r.lost}</div>
+                        <div className="text-center font-mono">{r.goal_diff > 0 ? `+${r.goal_diff}` : r.goal_diff}</div>
+                        <div className="text-center font-mono font-bold text-[#39FF14]">{r.points}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}

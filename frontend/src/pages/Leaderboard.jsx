@@ -68,16 +68,19 @@ export default function Leaderboard() {
       </div>
 
       <div className="surface overflow-hidden">
-        <div className="grid grid-cols-[28px_minmax(0,1fr)_42px_42px_42px] sm:grid-cols-[40px_minmax(0,1fr)_70px_90px_70px] gap-1 sm:gap-2 px-2 sm:px-3 py-2 label-eyebrow border-b border-white/10 text-[9px] sm:text-xs">
+        <div className="grid grid-cols-[34px_minmax(0,1fr)_40px_48px_40px] sm:grid-cols-[44px_minmax(0,1fr)_70px_90px_70px] gap-1 sm:gap-2 px-3 py-2 label-eyebrow border-b border-white/10 text-[10px] sm:text-xs">
           <div>#</div>
           <div>Spelare</div>
-          <div className="text-right">Live</div>
           <div className="text-right">
-            <span className="sm:hidden">Str.</span>
+            <span className="sm:hidden">L</span>
+            <span className="hidden sm:inline">Live</span>
+          </div>
+          <div className="text-right">
+            <span className="sm:hidden">STR</span>
             <span className="hidden sm:inline">Strategi</span>
           </div>
           <div className="text-right">
-            <span className="sm:hidden">Tot.</span>
+            <span className="sm:hidden">TOT</span>
             <span className="hidden sm:inline">Totalt</span>
           </div>
         </div>
@@ -86,38 +89,42 @@ export default function Leaderboard() {
           <div
             key={r.user_id}
             data-testid={`board-row-${r.user_id}`}
-            className={`grid grid-cols-[28px_minmax(0,1fr)_42px_42px_42px] sm:grid-cols-[40px_minmax(0,1fr)_70px_90px_70px] gap-1 sm:gap-2 px-2 sm:px-3 py-3 border-b border-white/5 text-xs sm:text-sm items-center ${
+            className={`grid grid-cols-[34px_minmax(0,1fr)_40px_48px_40px] sm:grid-cols-[44px_minmax(0,1fr)_70px_90px_70px] gap-1 sm:gap-2 px-3 py-3 border-b border-white/5 text-sm items-center ${
               r.user_id === user?.id ? "bg-[#00F0FF]/5" : ""
             }`}
           >
             <div className="font-display font-black min-w-0">
-              {idx === 0 ? (
-                <Crown size={18} weight="fill" className="text-[#FFCC00]" />
-              ) : idx === 1 ? (
-                <Medal size={18} weight="fill" className="text-zinc-300" />
-              ) : idx === 2 ? (
-                <Medal size={18} weight="fill" className="text-orange-400" />
-              ) : (
-                idx + 1
-              )}
+              <span className="sm:hidden">{idx + 1}</span>
+
+              <span className="hidden sm:inline">
+                {idx === 0 ? (
+                  <Crown size={18} weight="fill" className="text-[#FFCC00]" />
+                ) : idx === 1 ? (
+                  <Medal size={18} weight="fill" className="text-zinc-300" />
+                ) : idx === 2 ? (
+                  <Medal size={18} weight="fill" className="text-orange-400" />
+                ) : (
+                  idx + 1
+                )}
+              </span>
             </div>
 
-            <div className="truncate min-w-0">
+            <div className="min-w-0 truncate">
               <div className="font-semibold truncate">{r.name}</div>
-              <div className="text-[9px] sm:text-[10px] text-zinc-500 uppercase tracking-widest truncate">
+              <div className="text-[10px] text-zinc-500 uppercase tracking-widest truncate">
                 {r.role}
               </div>
             </div>
 
-            <div className="text-right font-mono tabular-nums min-w-0">
+            <div className="text-right font-mono tabular-nums">
               {r.live_points}
             </div>
 
-            <div className="text-right font-mono tabular-nums min-w-0">
+            <div className="text-right font-mono tabular-nums">
               {r.strategy_points}
             </div>
 
-            <div className="text-right font-mono tabular-nums font-bold text-[#39FF14] min-w-0">
+            <div className="text-right font-mono tabular-nums font-bold text-[#39FF14]">
               {r.total_points}
             </div>
           </div>
