@@ -211,14 +211,22 @@ function MatchRow({ match, myPred, onSubmit }) {
               {others.locked ? <div className="text-zinc-500">Andras tips visas när tippningen är stängd.</div>
                 : others.predictions.length === 0 ? <div className="text-zinc-500">Inga tips inskickade.</div>
                 : (
-                  <ul className="divide-y divide-white/5">
-                    {others.predictions.map((p) => (
-                      <li key={p.id} className="flex justify-between py-1">
-                        <span className="text-zinc-300">{p.user?.name || "Spelare"}</span>
-                        <span className="font-mono text-[#00F0FF]">{p.home_score} : {p.away_score}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <div className="grid grid-cols-[minmax(0,1fr)_72px_36px] gap-2 pb-2 text-[10px] uppercase tracking-widest text-zinc-500 border-b border-white/10">
+                      <span>Namn</span>
+                      <span className="text-right">Tips</span>
+                      <span className="text-right">Poäng</span>
+                    </div>
+                    <ul className="divide-y divide-white/5">
+                      {others.predictions.map((p) => (
+                        <li key={p.id} className="grid grid-cols-[minmax(0,1fr)_72px_36px] items-center gap-2 py-2">
+                          <span className="text-zinc-300 truncate">{p.user?.name || "Spelare"}</span>
+                          <span className="font-mono text-[#00F0FF] text-right">{p.home_score} : {p.away_score}</span>
+                          <span className="text-right text-zinc-400">{p.match_points ?? 0} p</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
                 )}
             </div>
           )}

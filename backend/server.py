@@ -433,6 +433,16 @@ async def match_predictions_visible(match_id: str, user: dict = Depends(get_curr
 
     for p in preds:
         p["user"] = umap.get(p["user_id"], {})
+        p["match_points"] = score_match(
+            p["home_score"], p["away_score"], match.get("home_score"), match.get("away_score")
+        )
+
+    preds.sort(
+        key=lambda p: (
+            -p.get("match_points", 0),
+            (p.get("user", {}).get("name") or "").lower()
+        )
+    )
 
     return {"locked": False, "predictions": preds}
 
@@ -857,7 +867,7 @@ def score_match(pred_h, pred_a, actual_h, actual_a) -> int:
         pts += 3
 
     # Rätt målskillnad
-    if (pred_h - pred_a) == (actual_h - actual_a):
+    if abs(pred_h - pred_a) == abs(actual_h - actual_a):
         pts += 2
 
     # Rätt antal mål för ett lag
