@@ -298,6 +298,14 @@ export default function Matches() {
     return true;
   });
 
+  const filteredSorted = [...filtered].sort((a, b) => {
+    if (filter !== "finished") return 0;
+    const aKickoff = new Date(a.kickoff || 0).getTime();
+    const bKickoff = new Date(b.kickoff || 0).getTime();
+    if (bKickoff !== aKickoff) return bKickoff - aKickoff;
+    return (b.match_number || 0) - (a.match_number || 0);
+  });
+
   const filterLabels = { upcoming: "Kommande", finished: "Spelade", all: "Alla" };
   const stageLabels = { all: "Alla matcher", group: "Gruppspel", knockout: "Slutspel" };
 
@@ -350,8 +358,8 @@ export default function Matches() {
       </div>
 
       <div className="space-y-3">
-        {filtered.length === 0 && <div className="surface p-6 text-zinc-500 text-sm text-center">Inga matcher.</div>}
-        {filtered.map((m) => <MatchRow key={m.id} match={m} myPred={myPreds[m.id]} onSubmit={onSubmit} />)}
+        {filteredSorted.length === 0 && <div className="surface p-6 text-zinc-500 text-sm text-center">Inga matcher.</div>}
+        {filteredSorted.map((m) => <MatchRow key={m.id} match={m} myPred={myPreds[m.id]} onSubmit={onSubmit} />)}
       </div>
     </div>
   );

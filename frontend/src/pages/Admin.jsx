@@ -28,6 +28,7 @@ const TABS = [
   { id: "teams", label: "Lag / DQ" },
   { id: "import", label: "Importera" },
   { id: "deadlines", label: "Strategiversioner" },
+  { id: "knockout", label: "Slutspelskontroll" },
   { id: "users", label: "Användare" },
   { id: "invites", label: "Inbjudningar" },
   { id: "scoring", label: "Poäng" },
@@ -470,6 +471,149 @@ function DeadlinesTab() {
   );
 }
 
+// ---------- Knockout validation ----------
+function KnockoutValidationTab() {
+  const [data, setData] = useState(null);
+  const [msg, setMsg] = useState("");
+
+  const load = async () => {
+    const { data: next } = await api.get("/admin/knockout-validation");
+    setData(next);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const progressAndReload = async () => {
+    await api.post("/admin/progress");
+    await load();
+    setMsg("Slutspelsschemat uppdaterat med FIFA-mappning.");
+  };
+
+  if (!data) {
+    return <Section title="Slutspelskontroll">Laddar…</Section>;
+  }
+
+  const summary = [
+    { label: "Bästa treor", value: data.best_thirds.length, accent: "text-[#39FF14]" },
+    { label: "Dubbletter", value: data.duplicates.length, accent: data.duplicates.length ? "text-[#FF3B30]" : "text-zinc-400" },
+    { label: "Tomma slots", value: data.missing_slots.length, accent: data.missing_slots.length ? "text-[#FFCC00]" : "text-zinc-400" },
+    { label: "Manuella lås", value: data.manual_overrides.length, accent: "text-[#00F0FF]" },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <Section
+        title="Slutspelskontroll"
+        action={
+          <button data-testid="knockout-progress" onClick={progressAndReload}
+            className="text-xs uppercase tracking-widest border border-white/10 text-[#00F0FF] px-3 py-1 inline-flex items-center gap-1">
+            <ArrowsClockwise size={12} /> Uppdatera bracket
+          </button>
+        }
+      >
+        {msg && <div className="text-[#39FF14] text-sm mb-2">{msg}</div>}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+          {summary.map((item) => (
+            <div key={item.label} className="border border-white/10 p-3">
+              <div className="label-eyebrow">{item.label}</div>
+              <div className={`font-display font-black text-2xl ${item.accent}`}>{item.value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 text-xs text-zinc-400">
+          Matchordning för tredjelag: {data.third_place_match_order.join(", ")}
+        </div>
+        {data.best_thirds.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            {data.best_thirds.map((row) => (
+              <span key={row.team_id} className="border border-white/10 px-2 py-1 inline-flex items-center gap-2">
+                <Flag team={row} size={14} />
+                <span>{row.team_name}</span>
+                <span className="text-zinc-500">3{row.group}</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      {(data.duplicates.length > 0 || data.invalid_third_assignments.length > 0 || data.missing_slots.length > 0) && (
+        <Section title="Avvikelser">
+          {data.duplicates.length > 0 && (
+            <div className="text-sm mb-3">
+              <div className="text-[#FF3B30] font-semibold mb-1">Dubbletter</div>
+              <div className="space-y-1 text-zinc-300">
+                {data.duplicates.map((dup) => (
+                  <div key={dup.team_id}>{dup.team_name} · matcher {dup.match_numbers.join(", ")}</div>
+                ))}
+              </div>
+            </div>
+          )}
+          {data.invalid_third_assignments.length > 0 && (
+            <div className="text-sm mb-3">
+              <div className="text-[#FFCC00] font-semibold mb-1">Fel tredjelagsplacering</div>
+              <div className="space-y-1 text-zinc-300">
+                {data.invalid_third_assignments.map((item) => (
+                  <div key={`${item.match_number}-${item.side}`}>
+                    Match {item.match_number} · {item.current_team_name} ligger i 3{item.current_group}, väntade 3{item.expected_group}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {data.missing_slots.length > 0 && (
+            <div className="text-sm">
+              <div className="text-zinc-200 font-semibold mb-1">Ej satta platser</div>
+              <div className="space-y-1 text-zinc-400">
+                {data.missing_slots.map((slot) => (
+                  <div key={`${slot.match_number}-${slot.side}`}>Match {slot.match_number} · {slot.side} · {slot.placeholder}</div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Section>
+      )}
+
+      <Section title="Genererad sextondelsfinal">
+        <div className="space-y-2 text-sm">
+          {data.generated_r32_matches.map((match) => (
+            <div key={match.match_id} className="border border-white/10 p-3" data-testid={`knockout-validation-${match.match_number}`}>
+              <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                <div className="font-display font-bold">Match #{match.match_number}</div>
+                {match.expected_third_group && (
+                  <div className="text-[10px] uppercase tracking-widest text-[#00F0FF]">Tredjelag: 3{match.expected_third_group}</div>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="border border-white/10 p-2">
+                  <div className="label-eyebrow mb-2">Nuvarande</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <FlagTeam team={match.current_home_team} placeholder={match.home_placeholder} size={18} />
+                    <span className="text-zinc-500">vs</span>
+                    <FlagTeam team={match.current_away_team} placeholder={match.away_placeholder} size={18} reverse />
+                  </div>
+                </div>
+                <div className="border border-white/10 p-2">
+                  <div className="label-eyebrow mb-2">Förväntat</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <FlagTeam team={match.expected_home_team} placeholder={match.home_placeholder} size={18} />
+                    <span className="text-zinc-500">vs</span>
+                    <FlagTeam team={match.expected_away_team} placeholder={match.away_placeholder} size={18} reverse />
+                  </div>
+                </div>
+              </div>
+              {(match.home_manual_override || match.away_manual_override) && (
+                <div className="mt-2 text-[10px] uppercase tracking-widest text-[#FFCC00]">
+                  Manuellt låst: {[match.home_manual_override ? "hemma" : null, match.away_manual_override ? "borta" : null].filter(Boolean).join(" / ")}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
 // ---------- Users with status ----------
 const STATUS_BADGES = {
   active: { label: "Aktiv", color: "bg-[#39FF14] text-black" },
@@ -766,6 +910,7 @@ export default function Admin() {
       {tab === "teams" && <TeamsTab />}
       {tab === "import" && <ImportTab />}
       {tab === "deadlines" && <DeadlinesTab />}
+      {tab === "knockout" && <KnockoutValidationTab />}
       {tab === "users" && <UsersTab />}
       {tab === "invites" && <InvitesTab />}
       {tab === "scoring" && <ScoringTab />}

@@ -41,7 +41,7 @@ export default function Dashboard() {
           {user.name?.split(" ")[0] || "Spelare"}.
         </h1>
         <p className="text-zinc-400 mt-2 text-sm">Lås dina tips före avspark. Dolda till matchen är slut.</p>
-        <div className="grid grid-cols-3 gap-3 mt-5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
           <div className="border border-white/10 p-3">
             <div className="label-eyebrow">Placering</div>
             <div className="font-display font-black text-2xl text-[#00F0FF]" data-testid="my-rank">{myRow ? `#${myRow.rank}` : "—"}</div>
@@ -53,6 +53,12 @@ export default function Dashboard() {
           <div className="border border-white/10 p-3">
             <div className="label-eyebrow">Totalt</div>
             <div className="font-display font-black text-2xl text-[#39FF14]" data-testid="my-total-pts">{myRow?.total_points ?? 0}</div>
+          </div>
+          <div className="border border-white/10 p-3">
+            <div className="label-eyebrow">Träffsäkerhet</div>
+            <div className="font-display font-black text-2xl text-[#FFCC00]" data-testid="my-accuracy-pct">
+              {`${(myRow?.accuracy_percentage ?? 0).toFixed(1)}%`}
+            </div>
           </div>
         </div>
         <Link to="/tournament" data-testid="cta-tournament"
@@ -96,7 +102,10 @@ export default function Dashboard() {
             <div key={r.user_id} data-testid={`dash-board-row-${r.user_id}`}
               className={`grid grid-cols-12 gap-2 px-3 py-3 border-b border-white/5 text-sm ${r.user_id === user.id ? "bg-[#00F0FF]/5" : ""}`}>
               <div className="col-span-1 font-display font-black">{r.rank}</div>
-              <div className="col-span-5 truncate">{r.name}</div>
+              <div className="col-span-5 min-w-0">
+                <div className="truncate">{r.name}</div>
+                <div className="text-[10px] text-zinc-500 font-mono">{`${(r.accuracy_percentage ?? 0).toFixed(1)}%`}</div>
+              </div>
               <div className="col-span-2 text-right font-mono">{r.live_points}</div>
               <div className="col-span-2 text-right font-mono">{r.strategy_points}</div>
               <div className="col-span-2 text-right font-mono font-bold text-[#39FF14]">{r.total_points}</div>

@@ -21,6 +21,8 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 
+from knockout_bracket import THIRD_PLACE_MATCH_ORDER, official_third_place_match_groups
+
 # ============== Config ==============
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
@@ -587,7 +589,250 @@ class StrategySubmitReq(BaseModel):
     finalists: List[str] = []
     champion: Optional[str] = None
     # For knockout versions:
-    picks: Dict[str, str] = {}  # match_id -> team_id (winner)
+    picks: Dict[str, Any] = {}  # legacy flat {match_id: team_id} or nested {stage: {match_id: team_id}}
+    bronze_winner: Optional[str] = None
+
+KNOCKOUT_STAGE_ORDER = ["r32", "r16", "qf", "sf", "third_place", "final"]
+VERSION_START_STAGE = {
+    "r32": "r32",
+    "r16": "r16",
+    "qf": "qf",
+    "sf": "sf",
+    "third_place": "third_place",
+    "final": "final",
+}
+VERSION_INCLUDED_STAGES = {
+    "r32": ["r32", "r16", "qf", "sf", "third_place", "final"],
+    "r16": ["r16", "qf", "sf", "third_place", "final"],
+    "qf": ["qf", "sf", "third_place", "final"],
+    "sf": ["sf", "third_place", "final"],
+    "third_place": ["third_place"],
+    "final": ["final"],
+}
+VERSION_STAGE_POINTS = {
+    "r32": {"r32": 8, "r16": 6, "qf": 5, "sf": 4, "third_place": 3, "champion": 5},
+    "r16": {"r16": 6, "qf": 5, "sf": 4, "third_place": 3, "champion": 5},
+    "qf": {"qf": 5, "sf": 4, "third_place": 3, "champion": 5},
+    "sf": {"sf": 4, "third_place": 3, "champion": 5},
+    "third_place": {"third_place": 3},
+    "final": {"champion": 5},
+}
+VERSION_REQUIRES_CHAMPION = {"r32", "r16", "qf", "sf", "final"}
+VERSION_REQUIRES_BRONZE = {"r32", "r16", "qf", "sf", "third_place"}
+
+
+def _normalize_knockout_round(round_value: Optional[str]) -> Optional[str]:
+    if not round_value:
+        return None
+    value = (round_value or "").strip().lower()
+    if "sextondelsfinal" in value:
+        return "r32"
+    if "åttondelsfinal" in value:
+        return "r16"
+    if "kvartsfinal" in value:
+        return "qf"
+    if "semifinal" in value:
+        return "sf"
+    if "bronsmatch" in value:
+        return "third_place"
+    if value == "final":
+        return "final"
+    return None
+
+
+def _empty_stage_picks() -> Dict[str, Dict[str, str]]:
+    return {stage: {} for stage in KNOCKOUT_STAGE_ORDER}
+
+
+def _normalize_stage_picks_from_payload(version_id: str, payload: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    stage_picks = _empty_stage_picks()
+    raw = payload.get("picks") or {}
+    # Legacy shape for knockout versions: {match_id: team_id}
+    if raw and all(isinstance(value, str) for value in raw.values()):
+        start_stage = VERSION_START_STAGE.get(version_id)
+        if start_stage:
+            stage_picks[start_stage] = {mid: tid for mid, tid in raw.items() if isinstance(mid, str) and isinstance(tid, str) and tid}
+        return stage_picks
+
+    # New shape: {stage: {match_id: team_id}}
+    if isinstance(raw, dict):
+        for stage in KNOCKOUT_STAGE_ORDER:
+            stage_map = raw.get(stage) or {}
+            if isinstance(stage_map, dict):
+                stage_picks[stage] = {
+                    str(mid): str(tid)
+                    for mid, tid in stage_map.items()
+                    if isinstance(mid, str) and isinstance(tid, str) and tid
+                }
+    return stage_picks
+
+
+def _normalize_knockout_submission(version_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    stage_picks = _normalize_stage_picks_from_payload(version_id, payload)
+    champion = payload.get("champion")
+    bronze_winner = payload.get("bronze_winner")
+
+    if not champion:
+        final_picks = stage_picks.get("final") or {}
+        if len(final_picks) == 1:
+            champion = next(iter(final_picks.values()))
+    if not bronze_winner:
+        bronze_picks = stage_picks.get("third_place") or {}
+        if len(bronze_picks) == 1:
+            bronze_winner = next(iter(bronze_picks.values()))
+
+    return {
+        "picks": stage_picks,
+        "champion": champion,
+        "bronze_winner": bronze_winner,
+    }
+
+
+async def _knockout_templates_by_stage() -> Dict[str, List[dict]]:
+    knockout_matches = await db.matches.find({"stage": "Knockout"}, {"_id": 0}).to_list(500)
+    knockout_matches = await _attach_teams_to_matches(knockout_matches)
+    grouped = {stage: [] for stage in KNOCKOUT_STAGE_ORDER}
+    for match in knockout_matches:
+        stage_key = _normalize_knockout_round(match.get("round") or match.get("stage"))
+        if stage_key in grouped:
+            grouped[stage_key].append(match)
+    for stage in grouped:
+        grouped[stage].sort(key=lambda m: (m.get("match_number") or 0, m.get("kickoff") or ""))
+    return grouped
+
+
+def _resolve_prediction_side_team(match: dict, side: str, predicted_winners: Dict[int, str], predicted_losers: Dict[int, str]) -> Optional[str]:
+    placeholder = match.get(f"{side}_placeholder")
+    if placeholder:
+        winner_match = PLACEHOLDER_W_RE.match(placeholder)
+        if winner_match:
+            return predicted_winners.get(int(winner_match.group(1)))
+        loser_match = PLACEHOLDER_RU_RE.match(placeholder)
+        if loser_match:
+            return predicted_losers.get(int(loser_match.group(1)))
+    return match.get(f"{side}_team_id")
+
+
+def _winner_for_match(match: dict) -> Optional[str]:
+    hs, as_ = match.get("home_score"), match.get("away_score")
+    if hs is None or as_ is None:
+        return None
+    if hs > as_:
+        return match.get("home_team_id")
+    if as_ > hs:
+        return match.get("away_team_id")
+    return None
+
+
+def _build_prediction_tree(version_id: str, templates_by_stage: Dict[str, List[dict]], normalized: Dict[str, Any]) -> Dict[str, Any]:
+    stage_picks = normalized.get("picks") or _empty_stage_picks()
+    start_stage = VERSION_START_STAGE.get(version_id)
+    included_stages = VERSION_INCLUDED_STAGES.get(version_id, [])
+
+    team_map: Dict[str, dict] = {}
+    actual_winner_by_match_id: Dict[str, str] = {}
+    for stage_matches in templates_by_stage.values():
+        for match in stage_matches:
+            if match.get("home_team"):
+                team_map[match["home_team"]["id"]] = match["home_team"]
+            if match.get("away_team"):
+                team_map[match["away_team"]["id"]] = match["away_team"]
+            winner = _winner_for_match(match)
+            if winner:
+                actual_winner_by_match_id[match["id"]] = winner
+
+    predicted_winners: Dict[int, str] = {}
+    predicted_losers: Dict[int, str] = {}
+    generated_matches: Dict[str, List[dict]] = {}
+    duplicates: Dict[str, List[dict]] = {}
+
+    for stage in included_stages:
+        stage_rows = []
+        appearance_map: Dict[str, List[int]] = defaultdict(list)
+        for template in templates_by_stage.get(stage, []):
+            if stage == start_stage:
+                home_id = template.get("home_team_id")
+                away_id = template.get("away_team_id")
+            else:
+                home_id = _resolve_prediction_side_team(template, "home", predicted_winners, predicted_losers)
+                away_id = _resolve_prediction_side_team(template, "away", predicted_winners, predicted_losers)
+
+            if home_id and template.get("match_number") is not None:
+                appearance_map[home_id].append(template.get("match_number"))
+            if away_id and template.get("match_number") is not None:
+                appearance_map[away_id].append(template.get("match_number"))
+
+            selected_winner = (stage_picks.get(stage) or {}).get(template["id"])
+            if selected_winner and selected_winner not in {home_id, away_id}:
+                selected_winner = None
+
+            match_number = template.get("match_number")
+            if selected_winner and match_number is not None:
+                predicted_winners[match_number] = selected_winner
+                if selected_winner == home_id:
+                    predicted_losers[match_number] = away_id
+                elif selected_winner == away_id:
+                    predicted_losers[match_number] = home_id
+
+            actual_winner = actual_winner_by_match_id.get(template["id"])
+            stage_rows.append({
+                "id": template.get("id"),
+                "match_number": match_number,
+                "round": template.get("round"),
+                "kickoff": template.get("kickoff"),
+                "tv_channel": template.get("tv_channel"),
+                "home_placeholder": template.get("home_placeholder"),
+                "away_placeholder": template.get("away_placeholder"),
+                "home_team_id": home_id,
+                "away_team_id": away_id,
+                "home_team": team_map.get(home_id),
+                "away_team": team_map.get(away_id),
+                "selected_winner_id": selected_winner,
+                "actual_winner_id": actual_winner,
+                "status": template.get("status"),
+                "is_finished": template.get("status") == "finished" and bool(actual_winner),
+                "is_correct": bool(actual_winner and selected_winner and selected_winner == actual_winner),
+            })
+        generated_matches[stage] = stage_rows
+        duplicates[stage] = [
+            {"team_id": tid, "match_numbers": nums}
+            for tid, nums in appearance_map.items()
+            if len(nums) > 1
+        ]
+
+    champion = normalized.get("champion")
+    bronze_winner = normalized.get("bronze_winner")
+
+    if not champion:
+        final_rows = generated_matches.get("final") or []
+        if len(final_rows) == 1:
+            champion = final_rows[0].get("selected_winner_id")
+    if not bronze_winner:
+        bronze_rows = generated_matches.get("third_place") or []
+        if len(bronze_rows) == 1:
+            bronze_winner = bronze_rows[0].get("selected_winner_id")
+
+    champion_actual = None
+    final_templates = templates_by_stage.get("final") or []
+    if len(final_templates) == 1:
+        champion_actual = actual_winner_by_match_id.get(final_templates[0].get("id"))
+
+    bronze_actual = None
+    bronze_templates = templates_by_stage.get("third_place") or []
+    if len(bronze_templates) == 1:
+        bronze_actual = actual_winner_by_match_id.get(bronze_templates[0].get("id"))
+
+    return {
+        "starting_round": start_stage,
+        "included_rounds": included_stages,
+        "picks": stage_picks,
+        "generated_matches": generated_matches,
+        "champion": champion,
+        "bronze_winner": bronze_winner,
+        "champion_correct": bool(champion_actual and champion and champion == champion_actual),
+        "bronze_correct": bool(bronze_actual and bronze_winner and bronze_winner == bronze_actual),
+        "duplicates": duplicates,
+    }
 
 class StrategyOverrideReq(BaseModel):
     status: Literal["auto", "open", "closed"] = "auto"
@@ -657,10 +902,41 @@ async def list_strategy_versions(user: dict = Depends(get_current_user)):
             **v,
             **state,
             "match_count": len(ms),
+            "points_by_stage": VERSION_STAGE_POINTS.get(v["id"]),
             "my_submitted": v["id"] in my_subs,
             "my_submission": my_subs.get(v["id"]),
         })
     return out
+
+
+async def _build_version_tree_for_user(version_id: str, user_id: str) -> dict:
+    if version_id not in VALID_VERSION_IDS or version_id == "pre_tournament":
+        raise HTTPException(404, "Okänd version")
+
+    templates_by_stage = await _knockout_templates_by_stage()
+    submission = await db.tournament_predictions.find_one(
+        {"user_id": user_id, "version": version_id},
+        {"_id": 0},
+    ) or {}
+    normalized = _normalize_knockout_submission(version_id, submission)
+    tree = _build_prediction_tree(version_id, templates_by_stage, normalized)
+    start_stage = VERSION_START_STAGE.get(version_id)
+    start_matches = templates_by_stage.get(start_stage, [])
+
+    has_duplicates = any(tree.get("duplicates", {}).get(stage) for stage in tree.get("included_rounds", []))
+    return {
+        "version": version_id,
+        "starting_round": tree.get("starting_round"),
+        "included_rounds": tree.get("included_rounds"),
+        "starting_matches_exist": bool(start_matches),
+        "generated_matches": tree.get("generated_matches"),
+        "picks": tree.get("picks"),
+        "champion": tree.get("champion"),
+        "bronze_winner": tree.get("bronze_winner"),
+        "duplicates": tree.get("duplicates"),
+        "has_duplicate_teams": has_duplicates,
+        "warnings": (["Dubbletter hittades i genererat slutspelsträd"] if has_duplicates else []),
+    }
 
 @api.get("/strategy/version/{version_id}/matches")
 async def matches_for_strategy_version(version_id: str):
@@ -668,6 +944,38 @@ async def matches_for_strategy_version(version_id: str):
         raise HTTPException(404, "Okänd version")
     ms = await matches_for_version(version_id)
     return await _attach_teams_to_matches(ms)
+
+
+@api.get("/strategy/version/{version_id}/tree")
+async def strategy_version_tree(version_id: str, user: dict = Depends(get_current_user)):
+    if version_id == "pre_tournament":
+        raise HTTPException(400, "Träd-vyn gäller endast slutspelsversioner")
+    return await _build_version_tree_for_user(version_id, user["id"])
+
+
+@api.post("/strategy/version/{version_id}/tree/preview")
+async def strategy_version_tree_preview(version_id: str, req: StrategySubmitReq, user: dict = Depends(get_current_user)):
+    if version_id not in VALID_VERSION_IDS or version_id == "pre_tournament":
+        raise HTTPException(404, "Okänd version")
+    templates_by_stage = await _knockout_templates_by_stage()
+    normalized = _normalize_knockout_submission(version_id, req.model_dump())
+    tree = _build_prediction_tree(version_id, templates_by_stage, normalized)
+    start_stage = VERSION_START_STAGE.get(version_id)
+    start_matches = templates_by_stage.get(start_stage, [])
+    has_duplicates = any(tree.get("duplicates", {}).get(stage) for stage in tree.get("included_rounds", []))
+    return {
+        "version": version_id,
+        "starting_round": tree.get("starting_round"),
+        "included_rounds": tree.get("included_rounds"),
+        "starting_matches_exist": bool(start_matches),
+        "generated_matches": tree.get("generated_matches"),
+        "picks": tree.get("picks"),
+        "champion": tree.get("champion"),
+        "bronze_winner": tree.get("bronze_winner"),
+        "duplicates": tree.get("duplicates"),
+        "has_duplicate_teams": has_duplicates,
+        "warnings": (["Dubbletter hittades i genererat slutspelsträd"] if has_duplicates else []),
+    }
 
 @api.post("/strategy/version/{version_id}")
 async def submit_strategy_version(version_id: str, req: StrategySubmitReq, user: dict = Depends(get_current_user)):
@@ -709,23 +1017,63 @@ async def submit_strategy_version(version_id: str, req: StrategySubmitReq, user:
             "sf": req.sf, "third_place": req.third_place, "finalists": req.finalists, "champion": req.champion,
         })
     else:
-        # Knockout winner picks: validate each match belongs to this version's stage
-        valid_match_ids = {m["id"] for m in await matches_for_version(version_id)}
-        match_team_map: Dict[str, set] = {}
-        for m in await matches_for_version(version_id):
-            allowed = {m.get("home_team_id"), m.get("away_team_id")} - {None}
-            match_team_map[m["id"]] = allowed
-        cleaned: Dict[str, str] = {}
-        for mid, tid in (req.picks or {}).items():
-            if mid not in valid_match_ids:
-                raise HTTPException(400, f"Match {mid} ingår inte i denna version")
-            if not tid:
-                continue
-            allowed = match_team_map.get(mid, set())
-            if allowed and tid not in allowed:
+        payload = req.model_dump()
+        normalized = _normalize_knockout_submission(version_id, payload)
+        templates_by_stage = await _knockout_templates_by_stage()
+        start_stage = VERSION_START_STAGE.get(version_id)
+        included_stages = VERSION_INCLUDED_STAGES.get(version_id, [])
+        start_matches = templates_by_stage.get(start_stage, [])
+
+        if not start_matches:
+            raise HTTPException(400, "Startomgången saknar fastställda matcher")
+
+        # Current round must be fully selected
+        start_picks = normalized.get("picks", {}).get(start_stage, {})
+        for match in start_matches:
+            selected = start_picks.get(match["id"])
+            allowed = {match.get("home_team_id"), match.get("away_team_id")} - {None}
+            if not selected:
+                raise HTTPException(400, "Välj en vinnare i varje match i startomgången")
+            if allowed and selected not in allowed:
                 raise HTTPException(400, "Vinnaren måste vara ett av matchens lag")
-            cleaned[mid] = tid
-        doc["picks"] = cleaned
+
+        tree = _build_prediction_tree(version_id, templates_by_stage, normalized)
+        stage_picks = tree.get("picks") or _empty_stage_picks()
+        generated_matches = tree.get("generated_matches") or {}
+
+        # Future rounds must be generated from previous picks and have winners selected when match slots are ready.
+        for stage in included_stages:
+            for row in generated_matches.get(stage, []):
+                match_id = row.get("id")
+                selected = (stage_picks.get(stage) or {}).get(match_id)
+                home_id = row.get("home_team_id")
+                away_id = row.get("away_team_id")
+                if not home_id or not away_id:
+                    raise HTTPException(400, "Välj vinnare i föregående kolumn först")
+                if not selected:
+                    raise HTTPException(400, "Välj en vinnare i varje genererad slutspelsmatch")
+                if selected not in {home_id, away_id}:
+                    raise HTTPException(400, "Vald vinnare måste finnas i matchen")
+
+        for stage in included_stages:
+            if tree.get("duplicates", {}).get(stage):
+                raise HTTPException(400, "Ogiltigt träd: samma lag förekommer flera gånger i samma omgång")
+
+        champion = tree.get("champion")
+        bronze_winner = tree.get("bronze_winner")
+
+        if version_id in VERSION_REQUIRES_CHAMPION and not champion:
+            raise HTTPException(400, "Mästare måste vara vald")
+        if version_id in VERSION_REQUIRES_BRONZE and not bronze_winner:
+            raise HTTPException(400, "Bronsvinnare måste vara vald")
+
+        doc.update({
+            "starting_round": start_stage,
+            "picks": stage_picks,
+            "generated_matches": generated_matches,
+            "champion": champion,
+            "bronze_winner": bronze_winner,
+        })
 
     await db.tournament_predictions.update_one(
         {"user_id": user["id"], "version": version_id},
@@ -827,6 +1175,59 @@ async def get_remaining_teams_after_stage(after_stage: str):
     
     return result
 
+
+@api.get("/strategy/pre-tournament-progress")
+async def strategy_pre_tournament_progress():
+    standings = await compute_all_standings()
+    group_complete = completed_groups_from_standings(standings)
+    best_thirds = best_thirds_from_standings(standings, group_complete)
+
+    confirmed_advancing: List[str] = []
+    for group, rows in standings.items():
+        if not group_complete.get(group):
+            continue
+        confirmed_advancing.extend([r.get("team_id") for r in rows[:2] if r.get("team_id")])
+    confirmed_advancing.extend([row.get("team_id") for row in best_thirds if row.get("team_id")])
+
+    matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
+    confirmed_r16: List[str] = []
+    confirmed_qf: List[str] = []
+    confirmed_sf: List[str] = []
+    confirmed_finalists: List[str] = []
+    bronze_winner: Optional[str] = None
+    champion: Optional[str] = None
+
+    for match in matches:
+        if match.get("stage") != "Knockout" or match.get("status") != "finished":
+            continue
+        winner = _winner_for_match(match)
+        if not winner:
+            continue
+        stage_key = _normalize_knockout_round(match.get("round") or match.get("stage"))
+        if stage_key == "r32":
+            confirmed_r16.append(winner)
+        elif stage_key == "r16":
+            confirmed_qf.append(winner)
+        elif stage_key == "qf":
+            confirmed_sf.append(winner)
+        elif stage_key == "sf":
+            confirmed_finalists.append(winner)
+        elif stage_key == "third_place":
+            bronze_winner = winner
+        elif stage_key == "final":
+            champion = winner
+
+    return {
+        "group_complete": group_complete,
+        "confirmed_advancing": list(dict.fromkeys(confirmed_advancing)),
+        "confirmed_r16": list(dict.fromkeys(confirmed_r16)),
+        "confirmed_qf": list(dict.fromkeys(confirmed_qf)),
+        "confirmed_sf": list(dict.fromkeys(confirmed_sf)),
+        "confirmed_finalists": list(dict.fromkeys(confirmed_finalists)),
+        "bronze_winner": bronze_winner,
+        "champion": champion,
+    }
+
 @api.post("/admin/strategy/version/{version_id}/override")
 async def admin_strategy_override(version_id: str, req: StrategyOverrideReq, admin: dict = Depends(require_admin)):
     if version_id not in VALID_VERSION_IDS:
@@ -878,6 +1279,43 @@ def score_match(pred_h, pred_a, actual_h, actual_a) -> int:
         pts += 2
 
     # Bonus för exakt resultat
+    if pred_h == actual_h and pred_a == actual_a:
+        pts += 1
+
+    return pts
+
+
+def score_match_accuracy(pred_h, pred_a, actual_h, actual_a) -> int:
+    """Accuracy scoring model used only for Träffsäkerhet leaderboard (max 11 per match)."""
+    if actual_h is None or actual_a is None:
+        return 0
+
+    pred_outcome = (pred_h > pred_a) - (pred_h < pred_a)
+    actual_outcome = (actual_h > actual_a) - (actual_h < actual_a)
+    pred_diff = pred_h - pred_a
+    actual_diff = actual_h - actual_a
+
+    pts = 0
+
+    # 4p correct winner/draw outcome
+    if pred_outcome == actual_outcome:
+        pts += 4
+
+    # Goal-difference points are mutually exclusive to preserve max=11.
+    if pred_diff == actual_diff and actual_outcome != 0 and pred_outcome == actual_outcome:
+        # 2p correct goal difference with correct winning team
+        pts += 2
+    elif abs(pred_diff) == abs(actual_diff):
+        # 1p correct goal-difference magnitude regardless of winner
+        pts += 1
+
+    # 2p exact goals per team
+    if pred_h == actual_h:
+        pts += 2
+    if pred_a == actual_a:
+        pts += 2
+
+    # 1p exact-score bonus
     if pred_h == actual_h and pred_a == actual_a:
         pts += 1
 
@@ -970,7 +1408,12 @@ async def recompute_strategy_points():
 
     # Pre-compute actual winner per finished knockout match (by match_id) for per-match picks
     actual_winner_by_match: Dict[str, str] = {}
+    stage_by_match_id: Dict[str, str] = {}
     for m in matches:
+        if m.get("stage") == "Knockout":
+            stage_key = _normalize_knockout_round(m.get("round") or m.get("stage"))
+            if stage_key:
+                stage_by_match_id[m.get("id")] = stage_key
         if m.get("stage") == "Knockout" and m.get("status") == "finished":
             hs, as_ = m.get("home_score"), m.get("away_score")
             if hs is None or as_ is None:
@@ -1023,13 +1466,42 @@ async def recompute_strategy_points():
             if tp.get("champion") and champion_id and tp["champion"] == champion_id:
                 pts += STRATEGY_POINTS["champion"]
         else:
-            # Knockout-stage winner picks: only count finished matches
-            vdef = VERSION_BY_ID.get(version_id)
-            ppc = (vdef or {}).get("points_per_correct") or 0
-            for mid, picked_tid in (tp.get("picks") or {}).items():
-                actual = actual_winner_by_match.get(mid)
-                if actual and picked_tid == actual:
-                    pts += ppc
+            # Knockout tree picks: score per stage with decreasing points by version.
+            scoring = VERSION_STAGE_POINTS.get(version_id, {})
+            normalized = _normalize_knockout_submission(version_id, tp)
+            picks_by_stage = normalized.get("picks") or _empty_stage_picks()
+
+            for stage, stage_points in scoring.items():
+                if stage in ("champion", "third_place"):
+                    continue
+                for mid, picked_tid in (picks_by_stage.get(stage) or {}).items():
+                    # Backward safety: if old data has flat picks mapped to unexpected stage, infer from match map.
+                    match_stage = stage_by_match_id.get(mid)
+                    if match_stage and match_stage != stage:
+                        continue
+                    actual = actual_winner_by_match.get(mid)
+                    if actual and picked_tid == actual:
+                        pts += stage_points
+
+            bronze_points = scoring.get("third_place", 0)
+            if bronze_points:
+                bronze_pick = normalized.get("bronze_winner")
+                if not bronze_pick:
+                    bronze_stage = picks_by_stage.get("third_place") or {}
+                    if len(bronze_stage) == 1:
+                        bronze_pick = next(iter(bronze_stage.values()))
+                if bronze_winner_id and bronze_pick and bronze_pick == bronze_winner_id:
+                    pts += bronze_points
+
+            champion_points = scoring.get("champion", 0)
+            if champion_points:
+                champion_pick = normalized.get("champion")
+                if not champion_pick:
+                    final_stage = picks_by_stage.get("final") or {}
+                    if len(final_stage) == 1:
+                        champion_pick = next(iter(final_stage.values()))
+                if champion_id and champion_pick and champion_pick == champion_id:
+                    pts += champion_points
         user_strategy[tp["user_id"]] += pts
 
     all_users = await db.users.find({}, {"id": 1, "_id": 0}).to_list(2000)
@@ -1103,6 +1575,129 @@ PLACEHOLDER_THIRD_RE = re.compile(r"^3([A-L]{2,})$")              # 3ABCDF (best
 PLACEHOLDER_W_RE = re.compile(r"^W(\d+)$")                        # W73
 PLACEHOLDER_RU_RE = re.compile(r"^RU(\d+)$")                      # RU101
 
+
+def third_place_sort_key(row: dict) -> tuple:
+    fair_play_points = row.get("fair_play_points")
+    fair_play_key = fair_play_points if fair_play_points is not None else float("inf")
+    return (
+        -(row.get("points") or 0),
+        -(row.get("goal_diff") or 0),
+        -(row.get("goals_for") or 0),
+        fair_play_key,
+        row.get("group") or "",
+        row.get("team_name") or "",
+    )
+
+
+def completed_groups_from_standings(standings: Dict[str, list]) -> Dict[str, bool]:
+    return {g: len(rows) >= 4 and all(r.get("played", 0) >= 3 for r in rows) for g, rows in standings.items()}
+
+
+def best_thirds_from_standings(standings: Dict[str, list], group_complete: Dict[str, bool]) -> List[dict]:
+    thirds_pool = []
+    for g, rows in standings.items():
+        if group_complete.get(g) and len(rows) >= 3:
+            thirds_pool.append({**rows[2], "group": g})
+    thirds_pool.sort(key=third_place_sort_key)
+    return thirds_pool[:8]
+
+
+def official_third_place_team_ids(best_thirds: List[dict]) -> Dict[int, str]:
+    if len(best_thirds) < 8:
+        return {}
+    third_by_group = {row["group"]: row for row in best_thirds}
+    match_groups = official_third_place_match_groups(list(third_by_group.keys()))
+    return {
+        match_number: third_by_group[group_letter]["team_id"]
+        for match_number, group_letter in match_groups.items()
+        if group_letter in third_by_group
+    }
+
+
+def resolve_knockout_placeholder_team_id(
+    label: Optional[str],
+    match_number: Optional[int],
+    standings: Dict[str, list],
+    match_winners: Dict[int, str],
+    match_losers: Dict[int, str],
+    official_third_team_ids: Dict[int, str],
+) -> Optional[str]:
+    if not label:
+        return None
+    group_match = PLACEHOLDER_GROUP_RE.match(label)
+    if group_match:
+        pos = int(group_match.group(1))
+        group = group_match.group(2)
+        rows = standings.get(group, [])
+        if len(rows) >= pos:
+            return rows[pos - 1]["team_id"]
+        return None
+    third_match = PLACEHOLDER_THIRD_RE.match(label)
+    if third_match:
+        if match_number is None:
+            return None
+        return official_third_team_ids.get(match_number)
+    winner_match = PLACEHOLDER_W_RE.match(label)
+    if winner_match:
+        return match_winners.get(int(winner_match.group(1)))
+    loser_match = PLACEHOLDER_RU_RE.match(label)
+    if loser_match:
+        return match_losers.get(int(loser_match.group(1)))
+    return None
+
+
+async def get_manual_assignment_overrides() -> Dict[tuple, dict]:
+    logs = await db.audit_log.find(
+        {"action": "manual_team_assign"},
+        {"_id": 0, "details": 1, "timestamp": 1, "admin_name": 1},
+    ).to_list(5000)
+    overrides: Dict[tuple, dict] = {}
+    for log in logs:
+        details = log.get("details") or {}
+        match_id = details.get("match_id")
+        side = details.get("side")
+        if not match_id or side not in ("home", "away"):
+            continue
+        overrides[(match_id, side)] = {
+            "team_id": details.get("team_id"),
+            "reason": details.get("reason"),
+            "timestamp": log.get("timestamp"),
+            "admin_name": log.get("admin_name"),
+        }
+
+    matches = await db.matches.find(
+        {
+            "$or": [
+                {"home_assignment_source": "manual"},
+                {"away_assignment_source": "manual"},
+            ]
+        },
+        {
+            "_id": 0,
+            "id": 1,
+            "home_team_id": 1,
+            "away_team_id": 1,
+            "home_assignment_reason": 1,
+            "away_assignment_reason": 1,
+        },
+    ).to_list(500)
+    for match in matches:
+        if match.get("home_team_id"):
+            overrides.setdefault((match["id"], "home"), {
+                "team_id": match.get("home_team_id"),
+                "reason": match.get("home_assignment_reason"),
+                "timestamp": None,
+                "admin_name": None,
+            })
+        if match.get("away_team_id"):
+            overrides.setdefault((match["id"], "away"), {
+                "team_id": match.get("away_team_id"),
+                "reason": match.get("away_assignment_reason"),
+                "timestamp": None,
+                "admin_name": None,
+            })
+    return overrides
+
 async def resolve_placeholder(label: Optional[str], standings: Dict[str, list], match_winners: Dict[int, str], match_losers: Dict[int, str], best_thirds: List[dict]) -> Optional[str]:
     if not label:
         return None
@@ -1135,15 +1730,9 @@ async def progress_tournament():
     # Group standings
     standings = await compute_all_standings()
     # Only consider a group complete when all 6 group matches finished (each team played 3)
-    group_complete = {g: all(r["played"] >= 3 for r in rows) for g, rows in standings.items()}
-    # Best thirds across all complete groups
-    thirds_pool = []
-    for g, rows in standings.items():
-        if group_complete.get(g) and len(rows) >= 3:
-            r = rows[2]
-            thirds_pool.append({**r, "group": g})
-    thirds_pool.sort(key=lambda r: (-r["points"], -r["goal_diff"], -r["goals_for"]))
-    best_thirds = thirds_pool[:8]
+    group_complete = completed_groups_from_standings(standings)
+    best_thirds = best_thirds_from_standings(standings, group_complete)
+    official_third_team_ids = official_third_place_team_ids(best_thirds)
 
     # Match winners/losers by match_number
     finished = await db.matches.find({"status": "finished"}, {"_id": 0}).to_list(2000)
@@ -1165,48 +1754,46 @@ async def progress_tournament():
 
     # Iterate matches and resolve placeholders
     all_matches = await db.matches.find({}, {"_id": 0}).to_list(2000)
+    manual_overrides = await get_manual_assignment_overrides()
     updates = 0
     for m in all_matches:
         update = {}
-        if not m.get("home_team_id") and m.get("home_placeholder"):
-            # Only resolve group placeholders when group complete; W/RU when match finished
+        if m.get("home_placeholder") and (m.get("id"), "home") not in manual_overrides:
             label = m["home_placeholder"]
-            mg = PLACEHOLDER_GROUP_RE.match(label) or PLACEHOLDER_THIRD_RE.match(label)
-            if mg and isinstance(mg, re.Match) and PLACEHOLDER_GROUP_RE.match(label):
-                if not group_complete.get(PLACEHOLDER_GROUP_RE.match(label).group(2)):
-                    pass
-                else:
-                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
-                    if tid:
+            tid = resolve_knockout_placeholder_team_id(
+                label, m.get("match_number"), standings, winners, losers, official_third_team_ids
+            )
+            if tid:
+                if PLACEHOLDER_GROUP_RE.match(label):
+                    group = PLACEHOLDER_GROUP_RE.match(label).group(2)
+                    if group_complete.get(group) and m.get("home_team_id") != tid:
                         update["home_team_id"] = tid
-            elif PLACEHOLDER_THIRD_RE.match(label):
-                # Need all listed groups complete
-                groups = list(PLACEHOLDER_THIRD_RE.match(label).group(1))
-                if all(group_complete.get(g) for g in groups):
-                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
-                    if tid:
+                elif PLACEHOLDER_THIRD_RE.match(label):
+                    groups = list(PLACEHOLDER_THIRD_RE.match(label).group(1))
+                    if all(group_complete.get(g) for g in groups) and m.get("home_team_id") != tid:
                         update["home_team_id"] = tid
-            else:
-                tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
-                if tid:
+                elif m.get("home_team_id") != tid:
                     update["home_team_id"] = tid
-        if not m.get("away_team_id") and m.get("away_placeholder"):
+                if "home_team_id" in update:
+                    update["home_assignment_source"] = "auto"
+        if m.get("away_placeholder") and (m.get("id"), "away") not in manual_overrides:
             label = m["away_placeholder"]
-            if PLACEHOLDER_GROUP_RE.match(label):
-                if group_complete.get(PLACEHOLDER_GROUP_RE.match(label).group(2)):
-                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
-                    if tid:
+            tid = resolve_knockout_placeholder_team_id(
+                label, m.get("match_number"), standings, winners, losers, official_third_team_ids
+            )
+            if tid:
+                if PLACEHOLDER_GROUP_RE.match(label):
+                    group = PLACEHOLDER_GROUP_RE.match(label).group(2)
+                    if group_complete.get(group) and m.get("away_team_id") != tid:
                         update["away_team_id"] = tid
-            elif PLACEHOLDER_THIRD_RE.match(label):
-                groups = list(PLACEHOLDER_THIRD_RE.match(label).group(1))
-                if all(group_complete.get(g) for g in groups):
-                    tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
-                    if tid:
+                elif PLACEHOLDER_THIRD_RE.match(label):
+                    groups = list(PLACEHOLDER_THIRD_RE.match(label).group(1))
+                    if all(group_complete.get(g) for g in groups) and m.get("away_team_id") != tid:
                         update["away_team_id"] = tid
-            else:
-                tid = await resolve_placeholder(label, standings, winners, losers, best_thirds)
-                if tid:
+                elif m.get("away_team_id") != tid:
                     update["away_team_id"] = tid
+                if "away_team_id" in update:
+                    update["away_assignment_source"] = "auto"
         if update:
             await db.matches.update_one({"id": m["id"]}, {"$set": update})
             updates += 1
@@ -1220,6 +1807,145 @@ async def admin_progress():
     await progress_tournament()
     return {"ok": True}
 
+
+@api.get("/admin/knockout-validation", dependencies=[Depends(require_admin)])
+async def knockout_validation():
+    standings = await compute_all_standings()
+    group_complete = completed_groups_from_standings(standings)
+    best_thirds = best_thirds_from_standings(standings, group_complete)
+    official_third_team_ids = official_third_place_team_ids(best_thirds)
+    match_to_third_group = {}
+    if len(best_thirds) >= 8:
+        match_to_third_group = official_third_place_match_groups([row["group"] for row in best_thirds])
+
+    finished = await db.matches.find({"status": "finished"}, {"_id": 0}).to_list(2000)
+    winners: Dict[int, str] = {}
+    losers: Dict[int, str] = {}
+    for match in finished:
+        match_number = match.get("match_number")
+        if match_number is None:
+            continue
+        home_score, away_score = match.get("home_score"), match.get("away_score")
+        if home_score is None or away_score is None:
+            continue
+        if home_score > away_score:
+            winners[match_number] = match.get("home_team_id")
+            losers[match_number] = match.get("away_team_id")
+        elif away_score > home_score:
+            winners[match_number] = match.get("away_team_id")
+            losers[match_number] = match.get("home_team_id")
+
+    teams = await db.teams.find({}, {"_id": 0, "id": 1, "team_name": 1, "group": 1, "country_code": 1}).to_list(200)
+    team_map = {team["id"]: team for team in teams}
+    manual_overrides = await get_manual_assignment_overrides()
+
+    r32_matches = await db.matches.find(
+        {"stage": "Knockout", "round": {"$regex": "^sextondelsfinal", "$options": "i"}},
+        {"_id": 0},
+    ).to_list(100)
+    r32_matches.sort(key=lambda match: (match.get("match_number") or 0, match.get("kickoff") or ""))
+
+    current_team_occurrences: Dict[str, List[int]] = defaultdict(list)
+    generated_matches = []
+    missing_slots = []
+    invalid_third_assignments = []
+    for match in r32_matches:
+        expected_home_id = resolve_knockout_placeholder_team_id(
+            match.get("home_placeholder"), match.get("match_number"), standings, winners, losers, official_third_team_ids
+        )
+        expected_away_id = resolve_knockout_placeholder_team_id(
+            match.get("away_placeholder"), match.get("match_number"), standings, winners, losers, official_third_team_ids
+        )
+
+        if match.get("home_team_id"):
+            current_team_occurrences[match["home_team_id"]].append(match.get("match_number"))
+        if match.get("away_team_id"):
+            current_team_occurrences[match["away_team_id"]].append(match.get("match_number"))
+
+        for side, expected_team_id in (("home", expected_home_id), ("away", expected_away_id)):
+            placeholder = match.get(f"{side}_placeholder")
+            current_team_id = match.get(f"{side}_team_id")
+            if placeholder and current_team_id is None:
+                missing_slots.append({
+                    "match_number": match.get("match_number"),
+                    "side": side,
+                    "placeholder": placeholder,
+                })
+            if placeholder and PLACEHOLDER_THIRD_RE.match(placeholder) and current_team_id:
+                expected_group = match_to_third_group.get(match.get("match_number"))
+                current_group = (team_map.get(current_team_id) or {}).get("group")
+                if expected_group and current_group and current_group != expected_group:
+                    invalid_third_assignments.append({
+                        "match_number": match.get("match_number"),
+                        "side": side,
+                        "placeholder": placeholder,
+                        "expected_group": expected_group,
+                        "current_group": current_group,
+                        "current_team_id": current_team_id,
+                        "current_team_name": (team_map.get(current_team_id) or {}).get("team_name"),
+                    })
+
+        generated_matches.append({
+            "match_id": match.get("id"),
+            "match_number": match.get("match_number"),
+            "home_placeholder": match.get("home_placeholder"),
+            "away_placeholder": match.get("away_placeholder"),
+            "current_home_team_id": match.get("home_team_id"),
+            "current_away_team_id": match.get("away_team_id"),
+            "current_home_team": team_map.get(match.get("home_team_id")),
+            "current_away_team": team_map.get(match.get("away_team_id")),
+            "expected_home_team_id": expected_home_id,
+            "expected_away_team_id": expected_away_id,
+            "expected_home_team": team_map.get(expected_home_id),
+            "expected_away_team": team_map.get(expected_away_id),
+            "expected_third_group": match_to_third_group.get(match.get("match_number")),
+            "home_manual_override": (match.get("id"), "home") in manual_overrides,
+            "away_manual_override": (match.get("id"), "away") in manual_overrides,
+            "home_manual_details": manual_overrides.get((match.get("id"), "home")),
+            "away_manual_details": manual_overrides.get((match.get("id"), "away")),
+        })
+
+    duplicates = [
+        {
+            "team_id": team_id,
+            "team_name": (team_map.get(team_id) or {}).get("team_name"),
+            "group": (team_map.get(team_id) or {}).get("group"),
+            "match_numbers": match_numbers,
+        }
+        for team_id, match_numbers in current_team_occurrences.items()
+        if len(match_numbers) > 1
+    ]
+    duplicates.sort(key=lambda item: (item.get("team_name") or "", item["match_numbers"]))
+
+    qualified_winners = []
+    qualified_runners_up = []
+    for group, rows in sorted(standings.items()):
+        if not group_complete.get(group) or len(rows) < 2:
+            continue
+        qualified_winners.append({**rows[0], "group": group})
+        qualified_runners_up.append({**rows[1], "group": group})
+
+    return {
+        "group_complete": group_complete,
+        "qualified_winners": qualified_winners,
+        "qualified_runners_up": qualified_runners_up,
+        "best_thirds": best_thirds,
+        "third_place_match_order": list(THIRD_PLACE_MATCH_ORDER),
+        "third_place_match_groups": match_to_third_group,
+        "generated_r32_matches": generated_matches,
+        "duplicates": duplicates,
+        "missing_slots": missing_slots,
+        "invalid_third_assignments": invalid_third_assignments,
+        "manual_overrides": [
+            {
+                "match_id": match_id,
+                "side": side,
+                **details,
+            }
+            for (match_id, side), details in sorted(manual_overrides.items())
+        ],
+    }
+
 # ============== Leaderboard ==============
 @api.get("/leaderboard")
 async def leaderboard():
@@ -1229,13 +1955,216 @@ async def leaderboard():
         {"_id": 0, "password_hash": 0},
     ).to_list(1000)
     rows = []
+    users_by_id = {u["id"]: u for u in users}
+
+    # ---------- Match accuracy ----------
+    finished_matches = await db.matches.find({"status": "finished"}, {"_id": 0}).to_list(2000)
+    finished_by_match_id = {m["id"]: m for m in finished_matches}
+    match_predictions = await db.match_predictions.find({}, {"_id": 0}).to_list(50000)
+
+    match_accuracy_points_by_user: Dict[str, int] = defaultdict(int)
+    match_accuracy_max_by_user: Dict[str, int] = defaultdict(int)
+    predicted_finished_matches_by_user: Dict[str, int] = defaultdict(int)
+
+    for pred in match_predictions:
+        match = finished_by_match_id.get(pred.get("match_id"))
+        if not match:
+            continue
+        uid = pred.get("user_id")
+        if uid not in users_by_id:
+            continue
+        pts = score_match_accuracy(
+            pred.get("home_score"),
+            pred.get("away_score"),
+            match.get("home_score"),
+            match.get("away_score"),
+        )
+        match_accuracy_points_by_user[uid] += pts
+        match_accuracy_max_by_user[uid] += 11
+        predicted_finished_matches_by_user[uid] += 1
+
+    # ---------- Strategy accuracy ----------
+    standings = await compute_all_standings()
+    group_complete = completed_groups_from_standings(standings)
+    all_groups_complete = bool(group_complete) and all(group_complete.values())
+
+    actual_group_winners: Dict[str, str] = {}
+    actual_advancing: set = set()
+    for group, stage_rows in standings.items():
+        if not group_complete.get(group) or len(stage_rows) < 2:
+            continue
+        actual_group_winners[group] = stage_rows[0].get("team_id")
+        actual_advancing.update([row.get("team_id") for row in stage_rows[:2] if row.get("team_id")])
+    for row in best_thirds_from_standings(standings, group_complete):
+        if row.get("team_id"):
+            actual_advancing.add(row.get("team_id"))
+
+    confirmed_r16 = set()
+    confirmed_qf = set()
+    confirmed_sf = set()
+    confirmed_finalists = set()
+    bronze_winner_id: Optional[str] = None
+    champion_id: Optional[str] = None
+    actual_winner_by_match_id: Dict[str, str] = {}
+
+    for match in finished_matches:
+        winner = _winner_for_match(match)
+        if not winner:
+            continue
+        stage_key = _normalize_knockout_round(match.get("round") or match.get("stage"))
+        if stage_key == "r32":
+            confirmed_r16.add(winner)
+        elif stage_key == "r16":
+            confirmed_qf.add(winner)
+        elif stage_key == "qf":
+            confirmed_sf.add(winner)
+        elif stage_key == "sf":
+            confirmed_finalists.add(winner)
+        elif stage_key == "third_place":
+            bronze_winner_id = winner
+        elif stage_key == "final":
+            champion_id = winner
+
+        if match.get("stage") == "Knockout":
+            actual_winner_by_match_id[match.get("id")] = winner
+
+    strategy_correct_by_user: Dict[str, int] = defaultdict(int)
+    strategy_possible_by_user: Dict[str, int] = defaultdict(int)
+
+    strategy_submissions = await db.tournament_predictions.find({}, {"_id": 0}).to_list(5000)
+    for sub in strategy_submissions:
+        uid = sub.get("user_id")
+        if uid not in users_by_id:
+            continue
+        version_id = sub.get("version", "pre_tournament")
+        if isinstance(version_id, int) or (isinstance(version_id, str) and version_id.isdigit()):
+            version_id = "pre_tournament"
+
+        if version_id == "pre_tournament":
+            group_rankings = sub.get("group_rankings") or {}
+            for group, ranking in group_rankings.items():
+                if not group_complete.get(group):
+                    continue
+                if ranking and len(ranking) >= 1 and ranking[0]:
+                    strategy_possible_by_user[uid] += 1
+                    if ranking[0] == actual_group_winners.get(group):
+                        strategy_correct_by_user[uid] += 1
+
+            # Evaluate advancing/r32 only when all groups are complete.
+            if all_groups_complete:
+                for tid in (sub.get("advancing") or []):
+                    if not tid:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if tid in actual_advancing:
+                        strategy_correct_by_user[uid] += 1
+                for tid in (sub.get("r32") or []):
+                    if not tid:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if tid in actual_advancing:
+                        strategy_correct_by_user[uid] += 1
+
+            if len(confirmed_r16) >= 16:
+                for tid in (sub.get("r16") or []):
+                    if not tid:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if tid in confirmed_r16:
+                        strategy_correct_by_user[uid] += 1
+
+            if len(confirmed_qf) >= 8:
+                for tid in (sub.get("qf") or []):
+                    if not tid:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if tid in confirmed_qf:
+                        strategy_correct_by_user[uid] += 1
+
+            if len(confirmed_sf) >= 4:
+                for tid in (sub.get("sf") or []):
+                    if not tid:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if tid in confirmed_sf:
+                        strategy_correct_by_user[uid] += 1
+
+            if len(confirmed_finalists) >= 2:
+                for tid in (sub.get("finalists") or []):
+                    if not tid:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if tid in confirmed_finalists:
+                        strategy_correct_by_user[uid] += 1
+
+            if bronze_winner_id:
+                for tid in (sub.get("third_place") or []):
+                    if not tid:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if tid == bronze_winner_id:
+                        strategy_correct_by_user[uid] += 1
+
+            if champion_id and sub.get("champion"):
+                strategy_possible_by_user[uid] += 1
+                if sub.get("champion") == champion_id:
+                    strategy_correct_by_user[uid] += 1
+        else:
+            normalized = _normalize_knockout_submission(version_id, sub)
+            picks_by_stage = normalized.get("picks") or _empty_stage_picks()
+
+            for stage in VERSION_INCLUDED_STAGES.get(version_id, []):
+                for mid, picked_tid in (picks_by_stage.get(stage) or {}).items():
+                    actual = actual_winner_by_match_id.get(mid)
+                    if not actual:
+                        continue
+                    strategy_possible_by_user[uid] += 1
+                    if picked_tid == actual:
+                        strategy_correct_by_user[uid] += 1
+
+            bronze_pick = normalized.get("bronze_winner")
+            if not bronze_pick:
+                bronze_stage = picks_by_stage.get("third_place") or {}
+                if len(bronze_stage) == 1:
+                    bronze_pick = next(iter(bronze_stage.values()))
+            if bronze_winner_id and bronze_pick and version_id in VERSION_REQUIRES_BRONZE:
+                strategy_possible_by_user[uid] += 1
+                if bronze_pick == bronze_winner_id:
+                    strategy_correct_by_user[uid] += 1
+
+            champion_pick = normalized.get("champion")
+            if not champion_pick:
+                final_stage = picks_by_stage.get("final") or {}
+                if len(final_stage) == 1:
+                    champion_pick = next(iter(final_stage.values()))
+            if champion_id and champion_pick and version_id in VERSION_REQUIRES_CHAMPION:
+                strategy_possible_by_user[uid] += 1
+                if champion_pick == champion_id:
+                    strategy_correct_by_user[uid] += 1
+
     for u in users:
         live = u.get("live_points", 0) or 0
         strat = u.get("strategy_points", 0) or 0
+        uid = u["id"]
+        match_accuracy_points = int(match_accuracy_points_by_user.get(uid, 0))
+        match_accuracy_max = int(match_accuracy_max_by_user.get(uid, 0))
+        strategy_correct_count = int(strategy_correct_by_user.get(uid, 0))
+        strategy_possible_count = int(strategy_possible_by_user.get(uid, 0))
+        combined_num = match_accuracy_points + strategy_correct_count
+        combined_den = match_accuracy_max + strategy_possible_count
+        accuracy_percentage = round((combined_num / combined_den) * 100, 2) if combined_den > 0 else 0.0
+
         rows.append({
             "user_id": u["id"], "name": u["name"], "email": u["email"],
             "live_points": live, "strategy_points": strat,
             "total_points": live + strat, "role": u.get("role", "user"),
+            "accuracy_percentage": accuracy_percentage,
+            "match_accuracy_points": match_accuracy_points,
+            "match_accuracy_max": match_accuracy_max,
+            "strategy_correct_count": strategy_correct_count,
+            "strategy_possible_count": strategy_possible_count,
+            "predicted_finished_matches": int(predicted_finished_matches_by_user.get(uid, 0)),
+            "correct_strategy_picks": strategy_correct_count,
         })
     rows.sort(key=lambda r: r["total_points"], reverse=True)
     rank = 1
@@ -1398,7 +2327,11 @@ async def manual_advance(req: ManualAdvanceReq, admin: dict = Depends(require_ad
     if not m:
         raise HTTPException(404, "Match not found")
     key = "home_team_id" if req.side == "home" else "away_team_id"
-    await db.matches.update_one({"id": req.match_id}, {"$set": {key: req.team_id}})
+    await db.matches.update_one({"id": req.match_id}, {"$set": {
+        key: req.team_id,
+        f"{req.side}_assignment_source": "manual",
+        f"{req.side}_assignment_reason": req.reason,
+    }})
     await log_audit(admin, "manual_team_assign", {"match_id": req.match_id, "team_id": req.team_id, "side": req.side, "reason": req.reason})
     return {"ok": True}
 

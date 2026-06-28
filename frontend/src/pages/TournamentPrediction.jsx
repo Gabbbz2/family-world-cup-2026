@@ -49,13 +49,15 @@ function GroupRankingBox({ group, teams, ranking, onChange, disabled }) {
   );
 }
 
-function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit, disabled }) {
+function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit, disabled, highlightIds = [] }) {
   const sortedTeams = [...teams].sort((a, b) => a.team_name?.localeCompare(b.team_name, "sv") || 0);
+  const highlightSet = new Set(highlightIds || []);
   return (
     <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
       {sortedTeams.map((t) => {
         const isSel = selected.includes(t.id);
         const disabledNow = disabled || (!isSel && limit && selected.length >= limit);
+        const isHighlightedCorrect = isSel && highlightSet.has(t.id);
         return (
           <button
             key={t.id}
@@ -63,7 +65,8 @@ function TeamMultiPick({ teams, selected, onToggle, testidPrefix, limit, disable
             onClick={() => onToggle(t.id)}
             disabled={disabledNow}
             className={`w-full min-w-[220px] flex items-center gap-2 px-3 py-2 border transition-all text-left ${
-              isSel ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
+              isHighlightedCorrect ? "border-[#FFCC00] bg-[#FFCC00]/20 text-[#FFCC00]"
+                : isSel ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
                 : disabledNow ? "border-white/5 text-zinc-700 cursor-not-allowed"
                 : "border-white/10 text-zinc-300 hover:border-white/30"
             }`}
@@ -196,7 +199,21 @@ function DynamicBracketEditor({ afterStage, allTeams, tmap, pred, setPred, locke
 }
 
 // ============ Pre Tournament editor (old V1 shape) ============
-function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) {
+function PreTournamentEditor({
+  groups,
+  allTeams,
+  tmap,
+  pred,
+  setPred,
+  locked,
+  confirmedAdvancing = [],
+  confirmedR16 = [],
+  confirmedQf = [],
+  confirmedSf = [],
+  confirmedFinalists = [],
+  bronzeWinner = "",
+  championWinner = "",
+}) {
   const setGroupRanking = (g, arr) =>
     setPred((p) => ({ ...p, group_rankings: { ...p.group_rankings, [g]: arr } }));
   const toggleList = (key, teamId) =>
@@ -264,7 +281,11 @@ function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) 
                       {[...allTeams].sort((a, b) => a.team_name?.localeCompare(b.team_name, "sv") || 0).map((t) => <option key={t.id} value={t.id}>{t.team_name}</option>)}
                     </select>
                     {pred.champion && tmap[pred.champion] && (
-                      <div className="mt-3 p-3 border border-[#00F0FF] bg-[#00F0FF]/10 flex items-center gap-2">
+                      <div className={`mt-3 p-3 flex items-center gap-2 ${
+                        championWinner && pred.champion === championWinner
+                          ? "border border-[#FFCC00] bg-[#FFCC00]/20 text-[#FFCC00]"
+                          : "border border-[#00F0FF] bg-[#00F0FF]/10"
+                      }`}>
                         <Crown size={20} weight="fill" className="text-[#FFCC00]" />
                         <FlagTeam team={tmap[pred.champion]} size={20} />
                       </div>
@@ -278,6 +299,15 @@ function PreTournamentEditor({ groups, allTeams, tmap, pred, setPred, locked }) 
                     testidPrefix={stage.key}
                     limit={stage.limit}
                     disabled={locked}
+                    highlightIds={
+                      stage.key === "advancing" ? confirmedAdvancing
+                        : stage.key === "r16" ? confirmedR16
+                        : stage.key === "qf" ? confirmedQf
+                        : stage.key === "sf" ? confirmedSf
+                        : stage.key === "finalists" ? confirmedFinalists
+                        : stage.key === "third_place" ? (bronzeWinner ? [bronzeWinner] : [])
+                        : []
+                    }
                   />
                 )}
                 <div className="mt-2 text-[10px] text-zinc-500">
@@ -352,13 +382,175 @@ function KnockoutVersionEditor({ matches, picks, setPicks, locked, versionId }) 
   );
 }
 
+const KNOCKOUT_STAGE_ORDER = ["r32", "r16", "qf", "sf", "third_place", "final"];
+const STAGE_LABELS = {
+  r32: "Sextondelsfinal",
+  r16: "Åttondelsfinal",
+  qf: "Kvartsfinal",
+  sf: "Semifinal",
+  third_place: "Bronsmatch",
+  final: "Final",
+};
+
+function FullKnockoutTreeEditor({ tree, state, onPickWinner, onPickChampion, onPickBronze, locked, loading, err }) {
+  if (loading) return <div className="surface p-6 text-center text-zinc-500">Laddar slutspelsträd...</div>;
+  if (err) return <div className="surface p-6 text-[#FF3B30]">{err}</div>;
+  if (!tree) return null;
+  if (!tree.starting_matches_exist) {
+    return (
+      <div className="surface p-6 text-center text-zinc-500 text-sm">
+        Matcherna för startomgången är ännu inte fastställda.
+      </div>
+    );
+  }
+
+  const included = tree.included_rounds || [];
+  const shouldShowChampion = included.includes("final") || tree.version === "final";
+  const shouldShowBronze = included.includes("third_place") || tree.version === "third_place";
+
+  return (
+    <section className="space-y-3">
+      {tree.has_duplicate_teams && (
+        <div className="surface p-3 border border-[#FFCC00] text-[#FFCC00] text-xs">
+          Varning: dubbletter hittades i genererat slutspelsträd.
+        </div>
+      )}
+      <div
+        className="overflow-x-auto no-scrollbar"
+        style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x" }}
+        tabIndex={0}
+      >
+        <div className="inline-flex gap-3 min-w-max">
+          {included.map((stage) => {
+            const rows = tree.generated_matches?.[stage] || [];
+            return (
+              <div key={stage} className="surface p-3 min-w-[280px] shrink-0" data-testid={`tree-stage-${stage}`}>
+                <div className="label-eyebrow mb-2">{STAGE_LABELS[stage] || stage}</div>
+                <div className="space-y-2">
+                  {rows.map((m) => {
+                    const selected = state?.picks?.[stage]?.[m.id] || "";
+                    const ready = m.home_team && m.away_team;
+                    return (
+                      <div key={m.id} className="border border-white/10 p-2">
+                        <div className="text-[10px] uppercase tracking-widest text-zinc-500 mb-2">#{m.match_number} · {m.round}</div>
+                        {!ready ? (
+                          <div className="text-xs text-zinc-500">Välj vinnare i föregående kolumn först.</div>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-1">
+                            {[m.home_team, m.away_team].map((team) => {
+                              const isSelected = selected === team.id;
+                              const isCorrectSelected = Boolean(
+                                isSelected && m.is_finished && m.actual_winner_id && m.actual_winner_id === team.id
+                              );
+                              return (
+                                <button
+                                  key={team.id}
+                                  disabled={locked}
+                                  onClick={() => onPickWinner(stage, m.id, team.id)}
+                                  className={`flex items-center gap-2 px-2 py-2 border text-left transition-all ${
+                                    isCorrectSelected
+                                      ? "border-[#FFCC00] bg-[#FFCC00]/20 text-[#FFCC00]"
+                                      : isSelected
+                                      ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
+                                      : "border-white/10 text-zinc-300 hover:border-white/30"
+                                  }`}
+                                >
+                                  <Flag code={team.country_code} size={18} />
+                                  <span className="text-sm font-semibold truncate">{team.team_name}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+
+          {shouldShowBronze && (
+            <div className="surface p-3 min-w-[260px] shrink-0">
+              <div className="label-eyebrow mb-2">Bronsvinnare</div>
+              <div className="space-y-1">
+                {(tree.generated_matches?.third_place?.[0] ? [tree.generated_matches.third_place[0].home_team, tree.generated_matches.third_place[0].away_team].filter(Boolean) : []).map((team) => {
+                  const selected = state.bronze_winner === team.id;
+                  const actualWinner = tree.generated_matches?.third_place?.[0]?.actual_winner_id;
+                  const isCorrect = selected && actualWinner && actualWinner === team.id;
+                  return (
+                    <button
+                      key={team.id}
+                      disabled={locked}
+                      onClick={() => onPickBronze(team.id)}
+                      className={`w-full flex items-center gap-2 px-2 py-2 border text-left ${
+                        isCorrect
+                          ? "border-[#FFCC00] bg-[#FFCC00]/20 text-[#FFCC00]"
+                          : selected
+                          ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
+                          : "border-white/10 text-zinc-300"
+                      }`}
+                    >
+                      <Flag code={team.country_code} size={18} />
+                      <span className="text-sm font-semibold truncate">{team.team_name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {shouldShowChampion && (
+            <div className="surface p-3 min-w-[260px] shrink-0">
+              <div className="label-eyebrow mb-2">Mästare</div>
+              <div className="space-y-1">
+                {(tree.generated_matches?.final?.[0] ? [tree.generated_matches.final[0].home_team, tree.generated_matches.final[0].away_team].filter(Boolean) : []).map((team) => {
+                  const selected = state.champion === team.id;
+                  const actualWinner = tree.generated_matches?.final?.[0]?.actual_winner_id;
+                  const isCorrect = selected && actualWinner && actualWinner === team.id;
+                  return (
+                    <button
+                      key={team.id}
+                      disabled={locked}
+                      onClick={() => onPickChampion(team.id)}
+                      className={`w-full flex items-center gap-2 px-2 py-2 border text-left ${
+                        isCorrect
+                          ? "border-[#FFCC00] bg-[#FFCC00]/20 text-[#FFCC00]"
+                          : selected
+                          ? "border-[#00F0FF] bg-[#00F0FF]/10 text-white"
+                          : "border-white/10 text-zinc-300"
+                      }`}
+                    >
+                      <Flag code={team.country_code} size={18} />
+                      <span className="text-sm font-semibold truncate">{team.team_name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function TournamentPrediction() {
   const [versions, setVersions] = useState([]);
   const [activeId, setActiveId] = useState("pre_tournament");
   const [groups, setGroups] = useState({});
-  const [matches, setMatches] = useState([]);
+  const [confirmedAdvancing, setConfirmedAdvancing] = useState([]);
+  const [confirmedR16, setConfirmedR16] = useState([]);
+  const [confirmedQf, setConfirmedQf] = useState([]);
+  const [confirmedSf, setConfirmedSf] = useState([]);
+  const [confirmedFinalists, setConfirmedFinalists] = useState([]);
+  const [bronzeWinner, setBronzeWinner] = useState("");
+  const [championWinner, setChampionWinner] = useState("");
   const [pred, setPred] = useState({ group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], third_place: [], finalists: [], champion: "" });
-  const [picks, setPicks] = useState({});
+  const [koTree, setKoTree] = useState(null);
+  const [koState, setKoState] = useState({ picks: { r32: {}, r16: {}, qf: {}, sf: {}, third_place: {}, final: {} }, champion: "", bronze_winner: "" });
+  const [treeLoading, setTreeLoading] = useState(false);
+  const [treeErr, setTreeErr] = useState("");
   const [saved, setSaved] = useState("");
   const [err, setErr] = useState("");
 
@@ -374,17 +566,48 @@ export default function TournamentPrediction() {
     setVersions(data);
     const g = (await api.get("/teams/groups")).data;
     setGroups(g);
+    const progress = (await api.get("/strategy/pre-tournament-progress")).data;
+    setConfirmedAdvancing(progress?.confirmed_advancing || []);
+    setConfirmedR16(progress?.confirmed_r16 || []);
+    setConfirmedQf(progress?.confirmed_qf || []);
+    setConfirmedSf(progress?.confirmed_sf || []);
+    setConfirmedFinalists(progress?.confirmed_finalists || []);
+    setBronzeWinner(progress?.bronze_winner || "");
+    setChampionWinner(progress?.champion || "");
   };
   useEffect(() => { loadAll(); }, []);
 
-  // Load matches when switching versions (skip pre_tournament — it uses groups)
+  const loadKnockoutTree = async (versionId, payload = null) => {
+    if (!versionId || versionId === "pre_tournament") return;
+    setTreeLoading(true);
+    setTreeErr("");
+    try {
+      const res = payload
+        ? await api.post(`/strategy/version/${versionId}/tree/preview`, payload)
+        : await api.get(`/strategy/version/${versionId}/tree`);
+      const data = res.data;
+      setKoTree(data);
+      setKoState({
+        picks: data.picks || { r32: {}, r16: {}, qf: {}, sf: {}, third_place: {}, final: {} },
+        champion: data.champion || "",
+        bronze_winner: data.bronze_winner || "",
+      });
+    } catch (e) {
+      setTreeErr(formatError(e));
+    } finally {
+      setTreeLoading(false);
+    }
+  };
+
+  // Load active version data when switching versions
   useEffect(() => {
     if (!activeId) return;
     setSaved(""); setErr("");
     if (activeId === "pre_tournament") {
-      setMatches([]);
+      setKoTree(null);
+      setTreeErr("");
     } else {
-      api.get(`/strategy/version/${activeId}/matches`).then(({ data }) => setMatches(data));
+      loadKnockoutTree(activeId);
     }
     // Load my existing submission for this version
     const v = versions.find((x) => x.id === activeId);
@@ -398,18 +621,55 @@ export default function TournamentPrediction() {
           sf: mine.sf || [], third_place: mine.third_place || [], finalists: mine.finalists || [], champion: mine.champion || "",
         });
       } else {
-        setPicks(mine.picks || {});
+        const picks = mine.picks || {};
+        const isFlat = Object.values(picks).every((v) => typeof v === "string");
+        setKoState({
+          picks: isFlat ? { r32: picks, r16: {}, qf: {}, sf: {}, third_place: {}, final: {} } : picks,
+          champion: mine.champion || "",
+          bronze_winner: mine.bronze_winner || "",
+        });
       }
     } else {
       setPred({ group_rankings: {}, advancing: [], r32: [], r16: [], qf: [], sf: [], third_place: [], finalists: [], champion: "" });
-      setPicks({});
+      setKoState({ picks: { r32: {}, r16: {}, qf: {}, sf: {}, third_place: {}, final: {} }, champion: "", bronze_winner: "" });
     }
   }, [activeId, versions]);
+
+  const updateTreePreview = async (nextState) => {
+    setKoState(nextState);
+    await loadKnockoutTree(activeId, nextState);
+  };
+
+  const onPickWinner = async (stage, matchId, teamId) => {
+    const next = {
+      ...koState,
+      picks: {
+        ...koState.picks,
+        [stage]: {
+          ...(koState.picks?.[stage] || {}),
+          [matchId]: teamId,
+        },
+      },
+    };
+    if (stage === "final") next.champion = teamId;
+    if (stage === "third_place") next.bronze_winner = teamId;
+    await updateTreePreview(next);
+  };
+
+  const onPickChampion = async (teamId) => {
+    await updateTreePreview({ ...koState, champion: teamId });
+  };
+
+  const onPickBronze = async (teamId) => {
+    await updateTreePreview({ ...koState, bronze_winner: teamId });
+  };
 
   const submit = async () => {
     setErr(""); setSaved("");
     try {
-      const body = activeId === "pre_tournament" ? { ...pred } : { picks };
+      const body = activeId === "pre_tournament"
+        ? { ...pred }
+        : { picks: koState.picks, champion: koState.champion, bronze_winner: koState.bronze_winner };
       await api.post(`/strategy/version/${activeId}`, body);
       setSaved(`${active?.label} sparat`);
       await loadAll();
@@ -479,25 +739,38 @@ export default function TournamentPrediction() {
         {activeId === "pre_tournament" ? (
           <>Första Tipset · Gruppvinnare +5 · Vidare +3 · Bracket-skeden 4–30 p</>
         ) : (
-          <>{active?.label} · {active?.points_per_correct} poäng per korrekt vinnare</>
+          <>{active?.label} · {Object.entries(active?.points_by_stage || {}).map(([k, v]) => `${k}: ${v}p`).join(" · ")}</>
         )}
       </div>
 
       {/* Editor */}
       {activeId === "pre_tournament" ? (
-        <PreTournamentEditor groups={groups} allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} />
+        <PreTournamentEditor
+          groups={groups}
+          allTeams={allTeams}
+          tmap={tmap}
+          pred={pred}
+          setPred={setPred}
+          locked={locked}
+          confirmedAdvancing={confirmedAdvancing}
+          confirmedR16={confirmedR16}
+          confirmedQf={confirmedQf}
+          confirmedSf={confirmedSf}
+          confirmedFinalists={confirmedFinalists}
+          bronzeWinner={bronzeWinner}
+          championWinner={championWinner}
+        />
       ) : (
-        <>
-          <KnockoutVersionEditor matches={matches} picks={picks} setPicks={setPicks} locked={locked} versionId={activeId} />
-          <DynamicBracketEditor afterStage={
-            activeId === "r32" ? "group" :
-            activeId === "r16" ? "r32" :
-            activeId === "qf" ? "r16" :
-            activeId === "sf" ? "qf" :
-            activeId === "third_place" ? "sf" :
-            activeId === "final" ? "third_place" : "group"
-          } allTeams={allTeams} tmap={tmap} pred={pred} setPred={setPred} locked={locked} />
-        </>
+        <FullKnockoutTreeEditor
+          tree={koTree}
+          state={koState}
+          onPickWinner={onPickWinner}
+          onPickChampion={onPickChampion}
+          onPickBronze={onPickBronze}
+          locked={locked}
+          loading={treeLoading}
+          err={treeErr}
+        />
       )}
 
       {err && <div className="text-[#FF3B30] text-sm">{err}</div>}
